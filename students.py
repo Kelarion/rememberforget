@@ -12,7 +12,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from itertools import combinations
 import numpy as np
 import scipy.special as spc
 

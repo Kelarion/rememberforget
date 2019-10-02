@@ -2,15 +2,19 @@
 Remember-Forget experiments
 
 Take sequences of tokens drawn from an alphabet, return at the end of the sequence
-the token that wasn't repeated. 
+the token that wasn't repeated. This one is for sending to the cluster.
 
-This is for sending to the cluster
+Bash arguments:
+    -v [--verbose]  set verbose
+    -n val          number of neurons (int)
+    -p val          size of alphabet (int)
+    -l val          number of tokens (int)
 """
 
 #%%
 CODE_DIR = r'/~/remember-forget/'
 
-import sys
+import getopt, sys
 sys.path.append(CODE_DIR)
 
 import math
@@ -25,29 +29,33 @@ from students import RNNModel, stateDecoder
 
 #%% functions on the networks
 def train_and_test(rnn_type, N, AB, Ls, forget_switch, nseq, ntest,
-                   nlayers=1, pad=0, dlargs=None, optagrgs=None,
-                   criterion=None, alg=None, be_picky=True):
+                   nlayers=1, pad=0, dlargs=None, optargs=None,
+                   criterion=None, alg=None, be_picky=True, verbose=True):
     """
     function to reduce clutter below
     """
+    
     AB = list(range(10))        # alphabet
     nneur = N                  # size of recurrent network
     train_embedding = True      # train the embedding of numbers?
     
     ninp = len(AB)              # dimension of RNN input
     
-    nseq = 5000
-    ntest = 500
-    pad = 0
+    if type(Ls) is not list:
+        Ls = [Ls]
     
     # optimisation parameters
     nepoch = 2000               # max how many times to go over data
-    alg = optim.Adam
-    dlargs = {'num_workers': 2, 
-              'batch_size': 64, 
-              'shuffle': True}  # dataloader arguments
-    optargs = {'lr': 5e-4}      # optimiser args
-    criterion = torch.nn.NLLLoss()
+    if alg is None:
+        alg = optim.Adam
+    if dlargs is None:
+        dlargs = {'num_workers': 2, 
+                  'batch_size': 64, 
+                  'shuffle': True}  # dataloader arguments
+    if optargs is None:
+        optargs = {'lr': 5e-4}      # optimiser args
+    if criterion is None:
+        criterion = torch.nn.NLLLoss()
     
     if forget_switch is not None:
         ninp += 1
@@ -56,7 +64,8 @@ def train_and_test(rnn_type, N, AB, Ls, forget_switch, nseq, ntest,
         AB_ = AB
     
     # train and test
-    print('TRAINING %s NETWORK' % str(Ls))
+    if verbose:
+        print('TRAINING %s NETWORK' % str(Ls))
     
     nums, ans, numstest, anstest = make_dset(Ls, AB, int(nseq/len(Ls)), 
                                              ntest, 
@@ -74,9 +83,11 @@ def train_and_test(rnn_type, N, AB, Ls, forget_switch, nseq, ntest,
                       do_print=False, epsilon=5e-4, padding=pad)
     
     accuracy = np.zeros(9)
-    print('TESTING %s NETWORK' % str(Ls))
+    if verbose:
+        print('TESTING %s NETWORK' % str(Ls))
     for j, l in enumerate(range(2,11)):
-        print('On L = %d' %(l))
+        if verbose:
+            print('On L = %d' %(l))
 #        if l in Ls:
 #            test_nums = nums[tests,:]
 #            test_ans = ans[tests]
@@ -108,12 +119,44 @@ def train_and_test(rnn_type, N, AB, Ls, forget_switch, nseq, ntest,
         
         whichone = np.argmax(O[-1,:,:],axis=0) # index in sequence of unique number
         accuracy[j] = np.mean(test_nums[np.arange(n_test), whichone] == test_ans)
-    print('- '*20)
+    if verbose:
+        print('- '*20)
     
     return loss_, accuracy
     
-#%% helpers
-# basic version of the task
+#%% the task
+def make_dset(Ls, AB, nseq, ntest, forget_switch, padding=0, be_picky=False):
+    """
+    function to reduce clutter below
+    """
+    lseq_max = 2*max(Ls)-1
+    if forget_switch is not None:
+        lseq_max += 1
+        
+    dset_nums = np.zeros((0,lseq_max))
+    dset_nums_test = [[] for _ in range(len(AB))]
+    dset_ans = np.zeros(0)
+    dset_ans_test = [[] for _ in range(len(AB))]
+    
+    for l in Ls:
+        nums, ans = draw_seqs(l, nseq+ntest, Om=AB, switch=forget_switch,
+                              be_picky=be_picky)
+        
+        trains = np.random.choice(nseq+ntest, nseq, replace=False)
+        tests = np.setdiff1d(np.arange(nseq+ntest), trains)
+        
+        nums_train = nums[trains,:]
+        
+        foo = np.pad(nums_train, ((0,0),(0,lseq_max-nums.shape[1])), 
+                     'constant', constant_values=padding)
+        dset_nums = np.append(dset_nums, foo, axis=0)
+        dset_ans = np.append(dset_ans, ans[trains])
+        
+        dset_nums_test[l] = nums[tests,:]
+        dset_ans_test[l] = ans[tests]
+    
+    return dset_nums, dset_ans, dset_nums_test, dset_ans_test
+
 def draw_seqs(L, N, Om=10, switch=-1, be_picky=True, mirror=False):
     """
     Draw N sequences of length 2L-1, such that L-1 elements occur twice
@@ -182,7 +225,7 @@ def draw_seqs(L, N, Om=10, switch=-1, be_picky=True, mirror=False):
             
     return S, A
 
-# miscellaneous
+#%% helpers
 def as_indicator(x, Om):
     """
     Convert list of sequences x to an indicator (i.e. one-hot) representation
@@ -226,43 +269,73 @@ def unique_seqs(AB, L, mirror = False):
         maxseq = int(math.factorial(L)*math.factorial(len(AB))/math.factorial(len(AB)-L))
     return maxseq
 
-def make_dset(Ls, AB, nseq, ntest, forget_switch, padding=0, be_picky=False):
-    """
-    function to reduce clutter below
-    """
-    lseq_max = 2*max(Ls)-1
-    if forget_switch is not None:
-        lseq_max += 1
-        
-    dset_nums = np.zeros((0,lseq_max))
-    dset_nums_test = [[] for _ in range(len(AB))]
-    dset_ans = np.zeros(0)
-    dset_ans_test = [[] for _ in range(len(AB))]
-    
-    for l in Ls:
-        nums, ans = draw_seqs(l, nseq+ntest, Om=AB, switch=forget_switch,
-                              be_picky=be_picky)
-        
-        trains = np.random.choice(nseq+ntest, nseq, replace=False)
-        tests = np.setdiff1d(np.arange(nseq+ntest), trains)
-        
-        nums_train = nums[trains,:]
-        
-        foo = np.pad(nums_train, ((0,0),(0,lseq_max-nums.shape[1])), 
-                     'constant', constant_values=padding)
-        dset_nums = np.append(dset_nums, foo, axis=0)
-        dset_ans = np.append(dset_ans, ans[trains])
-        
-        dset_nums_test[l] = nums[tests,:]
-        dset_ans_test[l] = ans[tests]
-    
-    return dset_nums, dset_ans, dset_nums_test, dset_ans_test
+#%% parse arguments
+allargs = sys.argv
 
-#%%
+arglist = allargs[1:]
 
+unixOpts = "vn:p:l:"
+gnuOpts = ["verbose"]
 
+opts, _ = getopt.getopt(arglist, unixOpts, gnuOpts)
 
+verbose, N, P, Ls = False, 10, 10, 5 # defaults
+for op, val in opts:
+    if op in ('-v','--verbose'):
+        verbose = True
+    if op in ('-n'):
+        N = val
+    if op in ('-p'):
+        P = val
+    if op in ('-l'):
+        Ls = val
 
+#%% run experiment
+# parameters
+AB = list(range(P))        # alphabet
+forget_switch =  max(AB)+1  # explicit vs 
+#forget_switch =  None       # implicit
+nneur = N                  # size of recurrent network
+
+nlayers = 1                 # number of recurrent networks
+nseq_max = 5000             # number of training sequences
+test_prop = 0.1             # proportion of test sequences
+rnn_type = 'GRU'
+be_picky = True             # should we only use unique data?
+#train_embedding = True      # train the embedding of numbers?
+#ninp = len(AB)              # dimension of RNN input
+
+nseq = 5000
+ntest = 500
+pad = 0
+
+# optimisation parameters
+nepoch = 2000               # max how many times to go over data
+alg = optim.Adam
+dlargs = {'num_workers': 2, 
+          'batch_size': 64, 
+          'shuffle': True}  # dataloader arguments
+optargs = {'lr': 5e-4}      # optimiser args
+criterion = torch.nn.NLLLoss()
+
+if forget_switch is not None:
+    AB_ = AB+[forget_switch] # extended alphabet
+else:
+    AB_ = AB
+
+print('Starting...')
+loss, perform = train_and_test(rnn_type, N, AB, Ls, 
+                               forget_switch, nseq, ntest,
+                               nlayers=nlayers, 
+                               pad=pad, 
+                               dlargs=dlargs, 
+                               optargs=optargs,
+                               criterion=criterion, alg=alg, 
+                               be_picky=be_picky,
+                               verbose=verbose)
+
+print('done')    
+print(':' + ')'*12)
 
 
 
