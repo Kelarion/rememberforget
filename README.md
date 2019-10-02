@@ -1,3 +1,5 @@
 # Remember-Forget networks
 
-Just some regular RNNs remembering and forgetting
+Just some nice RNNs remembering and forgetting
+
+"not for human consumption"
