@@ -12,7 +12,8 @@ Bash arguments:
 """
 
 #%%
-CODE_DIR = r'/~/remember-forget/'
+#CODE_DIR = r'/rigel/home/ma3811/remember-forget/'
+CODE_DIR = r'/home/matteo/Documents/github/rememberforget/'
 
 import getopt, sys
 sys.path.append(CODE_DIR)
@@ -23,21 +24,27 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from itertools import compress, permutations
+#from joblib import Parallel, delayed
+#import multiprocessing
 import numpy as np
 import scipy.special as spc
 from students import RNNModel, stateDecoder
 
 #%% functions on the networks
-def train_and_test(rnn_type, N, AB, Ls, forget_switch, nseq, ntest,
-                   nlayers=1, pad=0, dlargs=None, optargs=None,
+def train_and_test(rnn_type, N, P, Ls, nseq, ntest, explicit=True,
+                   nlayers=1, pad=None, dlargs=None, optargs=None,
                    criterion=None, alg=None, be_picky=True, verbose=True):
     """
     function to reduce clutter below
     """
     
-    AB = list(range(10))        # alphabet
+    AB = list(range(P))
     nneur = N                  # size of recurrent network
     train_embedding = True      # train the embedding of numbers?
+    if explicit:
+        forget_switch =  max(AB)+1
+    else:
+        forget_switch = None
     
     ninp = len(AB)              # dimension of RNN input
     
@@ -95,7 +102,8 @@ def train_and_test(rnn_type, N, AB, Ls, forget_switch, nseq, ntest,
 #            test_ans = anstest[l]
 #        else:
         test_nums, test_ans = draw_seqs(l, ntest, Om=AB,
-                                        switch=forget_switch)
+                                        switch=forget_switch,
+                                        be_picky=False)
         n_test, lseq = test_nums.shape
         
         O = torch.zeros(lseq, l, n_test)
@@ -118,11 +126,11 @@ def train_and_test(rnn_type, N, AB, Ls, forget_switch, nseq, ntest,
         O = O.detach().numpy()
         
         whichone = np.argmax(O[-1,:,:],axis=0) # index in sequence of unique number
-        accuracy[j] = np.mean(test_nums[np.arange(n_test), whichone] == test_ans)
+        accuracy[j] = np.mean(test_nums[np.arange(n_test), whichone] == test_ans.flatten())
     if verbose:
         print('- '*20)
     
-    return loss_, accuracy
+    return loss_, accuracy, rnn
     
 #%% the task
 def make_dset(Ls, AB, nseq, ntest, forget_switch, padding=0, be_picky=False):
@@ -279,31 +287,32 @@ gnuOpts = ["verbose"]
 
 opts, _ = getopt.getopt(arglist, unixOpts, gnuOpts)
 
-verbose, N, P, Ls = False, 10, 10, 5 # defaults
+verbose, N, P, L = False, 10, 10, 5 # defaults
 for op, val in opts:
     if op in ('-v','--verbose'):
         verbose = True
     if op in ('-n'):
-        N = val
+        try:
+            N = int(val)
+        except ValueError:
+            N = float(val)
     if op in ('-p'):
-        P = val
+        P = int(val)
     if op in ('-l'):
-        Ls = val
+        L = int(val)
+
+if type(N) is float:
+    N = int(N*P)
 
 #%% run experiment
 # parameters
-AB = list(range(P))        # alphabet
-forget_switch =  max(AB)+1  # explicit vs 
-#forget_switch =  None       # implicit
-nneur = N                  # size of recurrent network
+explicit = True  
 
 nlayers = 1                 # number of recurrent networks
 nseq_max = 5000             # number of training sequences
 test_prop = 0.1             # proportion of test sequences
 rnn_type = 'GRU'
 be_picky = True             # should we only use unique data?
-#train_embedding = True      # train the embedding of numbers?
-#ninp = len(AB)              # dimension of RNN input
 
 nseq = 5000
 ntest = 500
@@ -318,24 +327,43 @@ dlargs = {'num_workers': 2,
 optargs = {'lr': 5e-4}      # optimiser args
 criterion = torch.nn.NLLLoss()
 
-if forget_switch is not None:
-    AB_ = AB+[forget_switch] # extended alphabet
-else:
-    AB_ = AB
+
+# organise arguments for multiprocessing
+fixed_args = {'rnn_type': rnn_type,
+              'explicit': explicit,
+              'nseq': nseq,
+              'ntest': ntest,
+              'nlayers': nlayers,
+              'pad': pad,
+              'dlargs': dlargs,
+              'optargs': optargs,
+              'alg': alg,
+              'be_picky': be_picky,
+              'verbose': verbose} # all the arguments we don't iterate over
+
+#iter_args = product(Ns,Ps,Ls)
 
 print('Starting...')
-loss, perform = train_and_test(rnn_type, N, AB, Ls, 
-                               forget_switch, nseq, ntest,
-                               nlayers=nlayers, 
-                               pad=pad, 
-                               dlargs=dlargs, 
-                               optargs=optargs,
-                               criterion=criterion, alg=alg, 
-                               be_picky=be_picky,
-                               verbose=verbose)
+loss, accuracy, rnn = train_and_test(N=N, P=P, Ls=[L], **fixed_args)
+#num_cores = multiprocessing.cpu_count()
+#parfor = Parallel(n_jobs=num_cores, verbose=5)
+#
+#out = parfor(delayed(train_and_test)(N=n, AB=ab, Ls=l, 
+#                                     **fixed_args) for n,ab,l in iter_args)
+
+# save results
+params_fname = 'parameters_%d_%d_%d_%s.pt'%(N, P, L, rnn_type)
+loss_fname = 'loss_%d_%d_%d_%s.npy'%(N, P, L, rnn_type)
+accy_fname = 'accuracy_%d_%d_%d_%s.npy'%(N, P, L, rnn_type)
+
+rnn.save(CODE_DIR+'results/'+params_fname)
+with open(CODE_DIR+'results/' +loss_fname, 'wb') as f:
+    np.save(f, loss)
+with open(CODE_DIR+'results/'+accy_fname, 'wb') as f:
+    np.save(f, accuracy)
+
 
 print('done')    
 print(':' + ')'*12)
-
 
 

@@ -38,121 +38,6 @@ from students import RNNModel, stateDecoder
 
 # change the garbage illegible default color cycle
 mpl.rcParams['axes.prop_cycle'] = cycler(color='bgrcmyk')
-
-#%% functions on the networks
-def train_and_test(N, AB, forget_switch, nseq, ntest,
-                   nlayers=1, pad=0, dlargs=None, optagrgs=None,
-                   criterion=None, alg=None):
-    """
-    function to reduce clutter below
-    """
-    AB = list(range(10))        # alphabet
-    forget_switch =  max(AB)+1  # explicit vs 
-    #forget_switch =  None       # implicit
-    nneur = 3                  # size of recurrent network
-    nlayers = 1                 # number of recurrent networks
-    rnn_type = 'GRU'
-    be_picky = True             # should we only use unique data?
-    train_embedding = True      # train the embedding of numbers?
-    
-    
-    ninp = len(AB)              # dimension of RNN input
-    
-    nseq = 5000
-    ntest = 500
-    pad = 0
-    
-    # optimisation parameters
-    nepoch = 2000               # max how many times to go over data
-    alg = optim.Adam
-    dlargs = {'num_workers': 2, 
-              'batch_size': 64, 
-              'shuffle': True}  # dataloader arguments
-    optargs = {'lr': 5e-4}      # optimiser args
-    criterion = torch.nn.NLLLoss()
-    
-    if forget_switch is not None:
-        ninp += 1
-        AB_ = AB+[forget_switch] # extended alphabet
-    else:
-        AB_ = AB
-    
-    # train and test
-    accuracy = np.zeros((4,9))
-    print('TRAINING %s NETWORK' % str(Ls))
-    
-    # housekeeping
-#    nseq = int(np.min([nseq_max, (1-test_prop)*unique_seqs(AB, L)]))
-#    ntest = int(np.ceil(nseq*test_prop))
-#    lenseq = 2*L-1 
-#    if forget_switch is not None:
-#        lenseq += 1
-#    
-#    # draw data & targets
-#    nums, ans = draw_seqs(L, nseq+ntest, Om=AB, switch=forget_switch)
-#    trains = np.random.choice(nseq+ntest, nseq, replace=False)
-#    tests = np.setdiff1d(np.arange(nseq+ntest), trains)
-#    
-#    if train_embedding:
-#        enc = nums[trains,:] # (lenseq, nseq, ninp)
-#        ptnums = torch.tensor(enc).type(torch.LongTensor)
-#    else:
-#        enc = as_indicator(nums[trains,:], AB_) # (lenseq, nseq, ninp)
-#        ptnums = torch.tensor(enc).type(torch.FloatTensor) # convert to pytorch
-#    ptans = torch.tensor(ans[trains]).type(torch.FloatTensor)
-    
-    nums, ans, numstest, anstest = make_dset(Ls, AB, int(nseq/len(Ls)), 
-                                             ntest, 
-                                             forget_switch,
-                                             padding=pad)
-    
-    ptnums = torch.tensor(nums).type(torch.LongTensor)
-    ptans = torch.tensor(ans).type(torch.FloatTensor)
-    
-    # specify model and loss
-    rnn = RNNModel(rnn_type, len(AB_), ninp, nneur, nlayers, embed = train_embedding)
-    
-    loss_ = rnn.train(ptnums, ptans, optargs, dlargs, algo=alg, 
-                      nepoch=nepoch, criterion=criterion,
-                      do_print=False, epsilon=5e-4, padding=pad)
-    
-    print('TESTING %s NETWORK' % str(Ls))
-    for j, l in enumerate(range(2,11)):
-        print('On L = %d' %(l))
-#        if l in Ls:
-#            test_nums = nums[tests,:]
-#            test_ans = ans[tests]
-#            test_nums = numstest[l]
-#            test_ans = anstest[l]
-#        else:
-        test_nums, test_ans = draw_seqs(l, ntest, Om=AB,
-                                        switch=forget_switch)
-        n_test, lseq = test_nums.shape
-        
-        O = torch.zeros(lseq, l, n_test)
-        for inp in range(n_test):
-            
-            tst = test_nums[inp,:]
-            
-            if train_embedding:
-                enc = tst
-                test_inp = torch.tensor(enc).type(torch.LongTensor)
-            else:
-                enc = as_indicator(tst[np.newaxis,:], AB_) #(lenseq, nseq, ninp)
-                test_inp = torch.tensor(enc).type(torch.FloatTensor).transpose(1,0)
-            
-            hid = rnn.init_hidden(1)
-            for t in range(lseq):
-                out, hid = rnn(test_inp[t:t+1,...], hid)
-                O[t,:,inp] = torch.exp(out[0,0,tst[:l]])
-                
-        O = O.detach().numpy()
-        
-        whichone = np.argmax(O[-1,:,:],axis=0) # index in sequence of unique number
-        accuracy[i,j] = np.mean(test_nums[np.arange(n_test), whichone] == test_ans)
-    print('- '*20)
-    
-    return loss_, accuracy
     
 #%% helpers
 # basic version of the task
@@ -498,6 +383,9 @@ plt.title('GRU implicit generalisation, trained encoder')
 plt.ylabel('Accuracy on test data')
 plt.xlabel('L of test data')
 plt.legend(['2','4','5','7','chance'])
+
+#%% load from habanero
+
 
 #%% test and look inside
 special_nums, spc_ans = draw_seqs(L, nseq, Om=AB, switch=forget_switch, mirror=True)
