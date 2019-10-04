@@ -33,7 +33,7 @@ from students import RNNModel, stateDecoder
 #%% functions on the networks
 def train_and_test(rnn_type, N, P, Ls, nseq, ntest, explicit=True,
                    nlayers=1, pad=None, dlargs=None, optargs=None,
-                   criterion=None, alg=None, be_picky=True, verbose=True):
+                   criterion=None, alg=None, be_picky=False, verbose=True):
     """
     function to reduce clutter below
     """

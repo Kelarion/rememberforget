@@ -386,6 +386,32 @@ plt.legend(['2','4','5','7','chance'])
 
 #%% load from habanero
 
+fracs = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.5,2.0,3.0]
+Ps = [10,100,1000]
+L = 3
+rnn_type = 'GRU'
+
+accuracy = np.zeros((len(Ps),len(fracs),9))*np.nan
+loss = np.zeros((len(Ps),len(fracs),200000))*np.nan
+
+for i,P in enumerate(Ps):
+    for j,f in enumerate(fracs):
+        N = int(f*P)
+        
+        try:
+            params_fname = 'parameters_%d_%d_%d_%s.pt'%(N, P, L, rnn_type)
+            loss_fname = 'loss_%d_%d_%d_%s.npy'%(N, P, L, rnn_type)
+            accy_fname = 'accuracy_%d_%d_%d_%s.npy'%(N, P, L, rnn_type)
+                
+            acc = np.load(CODE_DIR+'results/'+accy_fname)
+            los = np.load(CODE_DIR+'results/'+loss_fname)
+            idx = np.min([200000, los.shape[0]])
+            
+            accuracy[i,j,:] = acc
+            loss[i,j,:idx] = los[:idx]
+        except:
+            print('whoops: %d %f' % (P,f))
+
 
 #%% test and look inside
 special_nums, spc_ans = draw_seqs(L, nseq, Om=AB, switch=forget_switch, mirror=True)
