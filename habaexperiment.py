@@ -329,7 +329,7 @@ nlayers = 1                 # number of recurrent networks
 rnn_type = 'GRU'
 be_picky = True             # should we only use unique data?
 
-nseq = 2000
+nseq = 5000
 ntest = 500
 pad = 0
 

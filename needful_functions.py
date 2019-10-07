@@ -86,8 +86,9 @@ def test_net(rnn, these_L, ntest, AB, forget_switch,
              verbose=False, return_hidden=False):
     
     accuracy = np.zeros(len(these_L))
-    H = torch.zeros(2*max(these_L), rnn.nhid, ntest, len(these_L))
-    inputs = np.zeros((2*max(these_L), ntest, len(these_L)))
+    if return_hidden:
+        H = torch.zeros(2*max(these_L), rnn.nhid, ntest, len(these_L))
+        inputs = np.zeros((2*max(these_L), ntest, len(these_L)))
     for j, l in enumerate(these_L):
         if verbose:
             print('On L = %d' %(l))
@@ -101,8 +102,8 @@ def test_net(rnn, these_L, ntest, AB, forget_switch,
                                         switch=forget_switch,
                                         be_picky=False)
         n_test, lseq = test_nums.shape
-        
-        inputs[:lseq,:,j] = test_nums.T
+        if return_hidden:
+            inputs[:lseq,:,j] = test_nums.T
         
         O = torch.zeros(lseq, l, n_test)
         for inp in range(n_test):
@@ -120,7 +121,8 @@ def test_net(rnn, these_L, ntest, AB, forget_switch,
             for t in range(lseq):
                 out, hid = rnn(test_inp[t:t+1,...], hid)
                 O[t,:,inp] = torch.exp(out[0,0,tst[:l]])
-                H[t,:,inp, j] = hid.squeeze()
+                if return_hidden:
+                    H[t,:,inp, j] = hid.squeeze()
                 
         O = O.detach().numpy()
         
@@ -129,8 +131,6 @@ def test_net(rnn, these_L, ntest, AB, forget_switch,
 
     if return_hidden:
         H = H.detach().numpy()
-        
-        
         return accuracy, H, inputs
     else:
         return accuracy
