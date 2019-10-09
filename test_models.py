@@ -18,7 +18,7 @@ from needful_functions import *
 
 #%% Load from Habanero experiment
 fracs = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.5,2.0,3.0]
-Ps = [50]
+Ps = [10]
 L_ = 5
 rnn_type = 'GRU'
 smoothening = 12
@@ -31,7 +31,7 @@ rnns = [[] for _ in range(len(fracs))]
 for i,P in enumerate(Ps):
 #    L = int(L_*P/10)
 #    nnnn = int(np.ceil((P-3)/8))
-    test_L = list(range(3,P,2))
+#    test_L = list(range(3,P,2))
 #    test_L = [L-2,L,L+2]
 #    test_L += list(range(L+3, P, int(np.ceil((P-L)/2))))
 #    test_L = list(range(2, L-2, int(np.ceil((P-L)/2)))) + test_L
@@ -52,7 +52,7 @@ for i,P in enumerate(Ps):
 #        test_L.insert(0,2)
 #        test_L = list(range(2,P))
         
-        results = test_net(rnn, test_L, 500, list(range(P)), P)
+#        results = test_net(rnn, test_L, 500, list(range(P)), P)
         
         print('done testing N=%d, P=%d network'%(N,P))
         
@@ -60,7 +60,7 @@ for i,P in enumerate(Ps):
         idx = np.min([200000, los.shape[0]])
         
         loss[i,j,:idx] = los[:idx]
-        accuracy[i,j,:] = results
+#        accuracy[i,j,:] = results
 
 loss_smooth = np.apply_along_axis(np.convolve,-1,loss,np.ones(smoothening),'same')
 
@@ -76,8 +76,8 @@ plt.ylabel('NLL loss')
 plt.title('Training with P='+str(Ps[pid]))
 
 #%% Linear decoding of memory activation
-L = [4]
-rnn = rnns[-2]
+L = [5]
+rnn = rnns[-3]
 P = Ps[pid]
 
 nseq = 1500
@@ -85,7 +85,7 @@ nseq = 1500
 #clsfr = linear_model.LogisticRegression(tol=1e-5, solver='lbfgs', max_iter=1000)
 clsfr = discriminant_analysis.LinearDiscriminantAnalysis
 
-# generate test data
+# generate training data
 acc, H, I = test_net(rnn, L, nseq, list(range(P)), P, return_hidden=True)
 lseq = H.shape[0]
 
@@ -109,12 +109,25 @@ for t in range(lseq):
         token_probs[t,:,p] = clf[p][t].predict_proba(H[t,...].T)[:,1]
     clf[-1][t].fit(H_flat.T, ans[:,:,-1].flatten())
 
+# generate test data
+acc, H, I = test_net(rnn, L, nseq, list(range(P)), P, return_hidden=True)
+
+#H = H.transpose(1,0,2,3).reshape((H.shape[1],-1))
+H = H.squeeze() # lenseq x nneur x nseq
+I = I.squeeze() # lenseq x nseq
+
+ans = np.zeros(I.shape + (P+1,)) # lenseq x nseq x ntoken
+for p in range(P+1):
+    ans[:,:,p] =np.apply_along_axis(is_memory_active, 0, I, p)
+#ans = ans.transpose(1,0,2).reshape((-1,P+1))
+
+# test performance
 perf = np.array([[clf[p][t].score(H[t,:,:].T, ans[t,:,p]) for t in range(lseq)] for p in range(P)])
 
 plt.imshow(perf)
 plt.colorbar()
 
-plt.title('decoder accuracy (per-time decoders)')
+plt.title('decoder accuracy (test sequences, per-time decoders)')
 plt.xlabel('time')
 plt.ylabel('token')
 
@@ -168,17 +181,18 @@ for p in range(P):
         if p==0:
             axs[p,t].set_title('Time %d'%tt)
 #            
-#        C = clf[p][-1].coef_/la.norm(clf[p][-1].coef_)
+#        C = clf[p][-2].coef_/la.norm(clf[p][-2].coef_)
 #        ison = C.dot(H[tt,...])[:,ans[tt,:,p]==1].squeeze()
 #        isoff = C.dot(H[tt,...])[:,ans[tt,:,p]==0].squeeze()
         ison = proj_ctr[p,tt,ans[tt,:,p]==1]
         isoff = proj_ctr[p,tt,ans[tt,:,p]==0]
+        foo = 0
 #        pval = sts.ks_2samp(ison,isoff).pvalue
-#        foo = thrs[p,tt]
+#        foo = -clf[p][1].intercept_/la.norm(clf[p][1].coef_)
         
         axs[p,t].hist(ison, density=True, alpha=0.5)
         axs[p,t].hist(isoff, density=True, alpha=0.5)
-        axs[p,t].plot([0,0],axs[p,t].get_ylim(), 'k-')
+        axs[p,t].plot([foo,foo],axs[p,t].get_ylim(), 'k-')
 #        axs[p,t].text(axs[p,t].get_xlim()[0],axs[p,t].get_ylim()[1],
 #                 'p={:.1e} (K-S)'.format(pval), fontsize=10, va='top')
         
@@ -190,7 +204,8 @@ fig, axs = plt.subplots(1, len(plot_these))
 for t,tt in enumerate(plot_these):
     axs[t].imshow(inner[:,:,tt], cmap='bwr')
     axs[t].set_title('Time %d'%tt)
-    axs[t].set_xlabel('Token')    
+    axs[t].set_xlabel('Token')
+    axs[t].get_images()[0].set_clim([-1,1])
 
 axs[0].set_ylabel('Token')
 #fig.colorbar()
@@ -212,10 +227,11 @@ plt.ylabel('Projection (centred at decision boundary)')
 plt.xlabel('Token at time t')
 
 #%%
-foo = la.norm(coefs - coefs[:,:,:1], axis=1)
-plt.plot(foo.T)
+#foo = la.norm(coefs - coefs[:,:,:1], axis=1)
+foo = la.norm(np.diff(coefs, axis=-1), axis=1)
+plt.plot(list(range(1,lseq)),foo.T)
 plt.legend(list(range(P+1)))
-plt.ylabel('Distance from start')
+plt.ylabel('Distance from previous timestep')
 plt.xlabel('time')
 
 
