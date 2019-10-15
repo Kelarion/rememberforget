@@ -12,6 +12,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torch.nn.parameter import Parameter
+from enum import IntEnum
 import numpy as np
 import scipy.special as spc
 
@@ -19,22 +21,26 @@ import scipy.special as spc
 class RNNModel(nn.Module):
     """ 
     Skeleton for a couple RNNs 
-    Namely: rnn_type = {'LSTM', 'GRU', 'tanh', 'relu'}
+    Namely: rnn_type = {'LSTM', 'GRU', 'tanh', 'relu', 'tanh-GRU', 'relu-GRU'}
+    The final two (tanh-GRU and relu-GRU) use the custom GRU class.
     """
     
     def __init__(self, rnn_type, ntoken, ninp, nhid, nlayers, embed=True):
         super(RNNModel,self).__init__()
-        
+
         if embed:
             self.encoder = nn.Embedding(ntoken, ninp)
         if rnn_type in ['LSTM', 'GRU']:
             self.rnn = getattr(nn, rnn_type)(ninp, nhid, nlayers)
+        elif rnn_type in ['tanh-GRU', 'relu-GRU']:
+            nlin = getattr(torch, rnn_type.split('-GRU')[0])
+            self.rnn = GatedGRU(ninp, nhid, nlayers, nonlinearity=nlin)
         else:
             try:
                 self.rnn = nn.RNN(ninp, nhid, nlayers, nonlinearity=rnn_type)
             except:
                 raise ValueError("Invalid rnn_type: give from {'LSTM', 'GRU', 'tanh', 'relu'}")
-                
+
         self.decoder = nn.Linear(nhid, ntoken)
         self.softmax = nn.LogSoftmax(dim=2)
         
@@ -44,7 +50,7 @@ class RNNModel(nn.Module):
         self.rnn_type = rnn_type
         self.nhid = nhid
         self.nlayers = nlayers
-        
+
     def init_weights(self):
         if self.embed:
             initrange = 0.1
@@ -52,26 +58,35 @@ class RNNModel(nn.Module):
         self.decoder.bias.data.zero_()
         self.decoder.weight.data.uniform_()
         
-    def forward(self, input, hidden):
+    def forward(self, input, hidden, give_gates=False):
+        """Only set give_gates=True if it's the custom GRU!!!"""
         if self.embed:
             emb = self.encoder(input)
             if emb.dim()<3:
                 emb = emb.unsqueeze(0)
         else:
             emb = input
-        output, hidden = self.rnn(emb, hidden)
+
+        if give_gates:
+            output, hidden, extras = self.rnn(emb, hidden, give_gates)
+        else:
+            output, hidden = self.rnn(emb, hidden)
+
         decoded = self.softmax(self.decoder(output))
-#        decoded = self.decoder(output)
-    
-        return decoded, hidden
-    
+        # decoded = self.decoder(output)
+        
+        if give_gates:
+            return decoded, hidden, extras
+        else:
+            return decoded, hidden
+
     def init_hidden(self, bsz):
         if self.rnn_type == 'LSTM':
             return (torch.zeros(1, bsz, self.nhid),
                     torch.zeros(1, bsz, self.nhid))
         else:
             return torch.zeros(1, bsz, self.nhid)
-        
+
     def save(self, to_path):
         """
         save model parameters to path
@@ -85,11 +100,11 @@ class RNNModel(nn.Module):
         """
         with open(from_path, 'rb') as f:
             self.load_state_dict(torch.load(f))
-    
+
     ### specific for our task (??)
     def train(self, X, Y, optparams, dlparams, algo=optim.SGD,
-          criterion=nn.NLLLoss(), nepoch=1000, do_print=True,
-          epsilon=0, padding=-1):
+        criterion=nn.NLLLoss(), nepoch=1000, do_print=True,
+        epsilon=0, padding=-1):
         """
         Train rnn on data X and labels Y (both torch tensors).
         X, Y need to have samples as the FIRST dimension
@@ -97,7 +112,7 @@ class RNNModel(nn.Module):
         """
         
         self.optimizer = algo(self.parameters(), **optparams)
-    
+
         dset = torch.utils.data.TensorDataset(X, Y)
         trainloader = torch.utils.data.DataLoader(dset, **dlparams)
         
@@ -118,11 +133,11 @@ class RNNModel(nn.Module):
                 # forward -> backward -> optimize
                 output = torch.zeros(btch.size(1), 
                                      self.decoder.out_features)
-#                hidden = torch.zeros(1,btch.size(1),self.nhid)
+                                     # hidden = torch.zeros(1,btch.size(1),self.nhid)
                 for t in range(btch.size(0)):
                     ignore = (btch[t,...] == padding)
-#                    vals = btch[t:t+1, ...]
-#                    print(torch.sum(ignore))
+                    #  vals = btch[t:t+1, ...]
+                    #  print(torch.sum(ignore))
                     out, hidden = self(btch[t:t+1, ...], hidden)
                     output[~ignore,:] = out[0, ~ignore, :]
                 
@@ -145,42 +160,88 @@ class RNNModel(nn.Module):
                       (epoch + 1, running_loss / i))
                 running_loss = 0.0
                 prev_loss = running_loss
-                
+
         print('[%d] Finished at loss = %0.3f'%(epoch+1, running_loss/i))
         print('~'*5)
         return loss_
-        
-#class RemForTask:
-#    """
-#    Class for storing parameters of a remember-forget task
-#    The idea is these parameters should be sufficient to identify an experiment
-#    """
-#    def __init__(self, datamaker, dmargs):
-#        """
-#        datamaker (callable): function which produces data for the task
-#            - must output arrays X, Y: data, labels
-#        dmargs (dict): all arguments passed into datamaker
-#            example for the standard task:
-#            - L: number of tokens (int)
-#            - nseq: maximum number of sequences (int)
-#            - AB: alphabet (list)
-#            - forget_switch: token to signal forgetting (int or str)
-#        
-#        ToDo: include RNN and optimization parameters 
-#        """
-#        
-#        self.datamaker = datamaker
-#        
-#        self.L = L
-#        self.AB = AB
-#        self.switch = forget_switch
-#        self.nseq = nseq
-#        
-#        self.ninp = len(AB)
-#        self.lenseq = 2*L-1
-#        if forget_switch is not None:
-#            self.lenseq += 1
-#            self.ninp += 1
+
+#%% Custom GRU by Miguel
+# class Dim(IntEnum):
+    # batch = 0
+    # seq = 1
+    # feature = 2
+
+class GatedGRU(nn.Module):
+    """Tokens must be passed into the network"""
+    def __init__(self, input_size, hidden_size, num_layers, nonlinearity=torch.tanh):
+        """Mimics the nn.GRU module. Currently num_layers is not supported"""
+        super().__init__()
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+
+        # self.embedding = nn.Embedding(input_size, embedding_size)
+
+        # update gate
+        self.W_iu = Parameter(torch.Tensor(input_size, hidden_size))
+        self.W_hu = Parameter(torch.Tensor(hidden_size, hidden_size))
+        self.b_u = Parameter(torch.Tensor(hidden_size))
+
+        # reset gate
+        self.W_ir = Parameter(torch.Tensor(input_size, hidden_size))    
+        self.W_hr = Parameter(torch.Tensor(hidden_size, hidden_size))
+        self.b_r = Parameter(torch.Tensor(hidden_size))
+
+        # hidden state
+        self.W_ih = Parameter(torch.Tensor(input_size, hidden_size))
+        self.W_hh = Parameter(torch.Tensor(hidden_size, hidden_size))
+        self.b_h = Parameter(torch.Tensor(hidden_size))
+
+        # self.decoder = nn.Linear(hidden_size, output_size)
+        self.f = nonlinearity
+
+        self.init_weights()
+
+    def init_weights(self):
+        for p in self.parameters():
+            if p.data.ndimension() >= 2:
+                nn.init.xavier_uniform_(p.data)
+            else:
+                nn.init.zeros_(p.data)
+
+    # def init_hidden(self):
+    #     h_t = torch.zeros(self.hidden_size)
+    #     return h_t
+
+    def forward(self, x, init_state, give_gates=False):
+        """Assumes x is of shape (len_seq, batch, input_size)"""
+        seq_sz, bs, _ = x.size()
+
+        update_gates = torch.empty(seq_sz, bs, self.hidden_size)
+        reset_gates = torch.empty(seq_sz, bs, self.hidden_size)
+        hidden_states = torch.empty(seq_sz, bs, self.hidden_size)
+
+        h_t = init_state
+
+        for t in range(seq_sz): # iterate over the time steps
+            x_t = x[:, t, :]
+            # x_t = self.embedding(x_t)
+
+            z_t = torch.sigmoid(x_t @ self.W_iu + h_t @ self.W_hu + self.b_u)
+
+            r_t = torch.sigmoid(x_t @ self.W_ir + h_t @ self.W_hr + self.b_r)
+
+            h_t = (1 - z_t) * h_t + z_t * self.f(x_t @ self.W_ih + (r_t * h_t) @ self.W_hh + self.b_h)
+
+            update_gates[t,:,:] = z_t
+            reset_gates[t,:,:] = r_t
+            hidden_states[t,:,:] = h_t
+
+        output = hidden_states
+
+        if give_gates:
+            return output, h_t, (update_gates, reset_gates)
+        else:
+            return output, h_t
 
 #%% decoder
 class stateDecoder(nn.Module):
@@ -215,14 +276,14 @@ class stateDecoder(nn.Module):
             decoded[p] = getattr(self, 'softmax%d'%(p))(getattr(self, 'decoder%d'%(p))(hidden))
         
         return decoded
-    
+
     def is_memory_active(seq, mem):
         """
         Returns step function for whether mem is 'active' in seq
         """
         stp = np.cumsum((seq==mem).astype(int), axis = 1) % 2
         return stp
-    
+
     def train(self, X, Y, optparams, dlparams, algo=optim.SGD,
               criterion = nn.NLLLoss(), nepoch=1000, do_print=True,
               epsilon = 0):
@@ -257,16 +318,16 @@ class stateDecoder(nn.Module):
                 for t, p in enumerate(self.tokens):
                     plabs = self.is_memory_active(labs, p)
                     plabs = plabs.view(-1,1).long().squeeze()
-#                    plabs = (labs==p).long().squeeze()
+                    # plabs = (labs==p).long().squeeze()
                     loss[t] = criterion(decoded[t], plabs)
                     loss[t].backward()
-                
+
                 self.optimizer.step()
                 
                 # update loss
                 running_loss += [l.item() for l in loss]
                 loss_ = np.append(loss_, [[l.item() for l in loss]], axis=0)
-                
+
             if (epsilon>0) and np.all(np.abs(running_loss-prev_loss) <= epsilon):
                 print('[%d] Converged at loss = %0.3f' % 
                       (epoch+1, str((running_loss/i).round(3))))

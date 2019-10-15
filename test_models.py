@@ -1,7 +1,7 @@
 CODE_DIR = r'/home/matteo/Documents/github/rememberforget/'
 svdir = r'~/Documents/uni/columbia/sueyeon/experiments/'
 
-import sys
+import sys, os
 sys.path.append(CODE_DIR)
 
 from sklearn import svm, calibration, linear_model, discriminant_analysis
@@ -14,37 +14,44 @@ import scipy.linalg as la
 from cycler import cycler
 
 from students import RNNModel, stateDecoder
+
 from needful_functions import *
 
 #%% Load from Habanero experiment
-fracs = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.5,2.0,3.0]
+#fracs = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.5,2.0,3.0]
+fracs = [1,2,3,4,5,6,7,8,9,10,15,20,30]
 Ps = [10]
 L_ = 5
 rnn_type = 'GRU'
 smoothening = 12
 
-accuracy = np.zeros((len(Ps),len(fracs),24))*np.nan
-Ls = np.zeros((len(Ps),8))
+accuracy = np.zeros((len(Ps),len(fracs),9))*np.nan
+Ls = np.zeros((len(Ps),9))
 loss = np.zeros((len(Ps),len(fracs),200000))
 
 rnns = [[] for _ in range(len(fracs))]
 for i,P in enumerate(Ps):
 #    L = int(L_*P/10)
 #    nnnn = int(np.ceil((P-3)/8))
-#    test_L = list(range(3,P,2))
+#    test_L = list(range(2,P))
+#    test_L.insert(4,L)
 #    test_L = [L-2,L,L+2]
 #    test_L += list(range(L+3, P, int(np.ceil((P-L)/2))))
 #    test_L = list(range(2, L-2, int(np.ceil((P-L)/2)))) + test_L
 #    test_L.append(P-1)
-#    Ls[i,:] = np.array(test_L)
+    test_L = [2,3,4,5,6,7,8,9,10]
+    Ls[i,:] = np.array(test_L)
     
-    for j,f in enumerate(fracs):
-        N = int(f*P)
+    for j,N in enumerate(fracs):
+#        N = int(f*P)
         
         params_fname = 'parameters_%d_%d_%s.pt'%(N, P, rnn_type)
         loss_fname = 'loss_%d_%d_%s.npy'%(N, P,  rnn_type)
+        if not os.path.exists(CODE_DIR+'results/'+loss_fname):
+            print(CODE_DIR+'results/'+loss_fname+' doesn''t exist!')
+            continue
         
-        rnn = RNNModel('GRU', P+1, P+1, N, 1, embed=True)
+        rnn = RNNModel(rnn_type, P+1, P+1, N, 1, embed=True)
         rnn.load(CODE_DIR+'results/'+params_fname)
         rnns[j] = rnn
 #        test_L = [l for l in range(L-3,L+4)]
@@ -52,7 +59,7 @@ for i,P in enumerate(Ps):
 #        test_L.insert(0,2)
 #        test_L = list(range(2,P))
         
-#        results = test_net(rnn, test_L, 500, list(range(P)), P)
+        results = test_net(rnn, test_L, 500, list(range(P)), P)
         
         print('done testing N=%d, P=%d network'%(N,P))
         
@@ -63,9 +70,8 @@ for i,P in enumerate(Ps):
 #        accuracy[i,j,:] = results
 
 loss_smooth = np.apply_along_axis(np.convolve,-1,loss,np.ones(smoothening),'same')
-
 #%% 
-pid = 0
+pid = 2
 cmap_name = 'ocean'
 cols = getattr(cm, cmap_name)(np.linspace(0,1,len(fracs)))
 mpl.rcParams['axes.prop_cycle'] = cycler(color=cols)
@@ -75,15 +81,27 @@ plt.legend(np.array(fracs)*Ps[pid], loc='upper right')
 plt.ylabel('NLL loss')
 plt.title('Training with P='+str(Ps[pid]))
 
+#%%
+pid = 0
+plt.figure()
+plt.plot(test_L, accuracy[pid,:,:].T)
+plt.legend(fracs)
+plt.plot(test_L, 1/np.array(test_L), 'k--')
+plt.xlabel('test L')
+plt.ylabel('test accuracy')
+
 #%% Linear decoding of memory activation
-L = [5]
-rnn = rnns[-3]
+L = [7]
+rnn = rnns[-1]
 P = Ps[pid]
 
 nseq = 1500
 #clsfr = calibration.CalibratedClassifierCV(svm.LinearSVC(tol=1e-5, max_iter=5000), cv=10)
+#clsfr = svm.LinearSVC
+#cfargs = {'tol': 1e-5, 'max_iter':5000}
 #clsfr = linear_model.LogisticRegression(tol=1e-5, solver='lbfgs', max_iter=1000)
 clsfr = discriminant_analysis.LinearDiscriminantAnalysis
+cfargs = {}
 
 # generate training data
 acc, H, I = test_net(rnn, L, nseq, list(range(P)), P, return_hidden=True)
@@ -100,13 +118,13 @@ for p in range(P+1):
 #ans = ans.transpose(1,0,2).reshape((-1,P+1))
 
 # do the decoding
-clf = [[clsfr() for _ in range(lseq)] for _ in range(P+1)]
+clf = [[clsfr(**cfargs) for _ in range(lseq)] for _ in range(P+1)]
 
-token_probs = np.zeros(ans.shape)
+#token_probs = np.zeros(ans.shape)
 for t in range(lseq):
     for p in range(P):
         clf[p][t].fit(H[t,...].T, ans[t,:,p])
-        token_probs[t,:,p] = clf[p][t].predict_proba(H[t,...].T)[:,1]
+#        token_probs[t,:,p] = clf[p][t].predict_proba(H[t,...].T)[:,1]
     clf[-1][t].fit(H_flat.T, ans[:,:,-1].flatten())
 
 # generate test data
@@ -200,15 +218,31 @@ for p in range(P):
             axs[p][t].set_xlabel('LD1')
 
 #%% see how different LDs relate to each other
+plot_these = list(range(lseq))
+#plot_these = [1, L[0], -1]
+
 fig, axs = plt.subplots(1, len(plot_these))
 for t,tt in enumerate(plot_these):
     axs[t].imshow(inner[:,:,tt], cmap='bwr')
     axs[t].set_title('Time %d'%tt)
     axs[t].set_xlabel('Token')
     axs[t].get_images()[0].set_clim([-1,1])
+    if t != 0:
+        axs[t].set_yticks([])
 
 axs[0].set_ylabel('Token')
 #fig.colorbar()
+
+fig, axs = plt.subplots(1, len(plot_these))
+for t,tt in enumerate(plot_these):
+    axs[t].imshow(coefs[:,:,tt].T, cmap='bwr')
+    axs[t].set_title('Time %d'%tt)
+    axs[t].set_xlabel('Token')
+    axs[t].get_images()[0].set_clim([-1,1])
+    if t != 0:
+        axs[t].set_yticks([])
+
+axs[0].set_ylabel('Neuron')
 
 #%% how do the projections evolve for example sequences?
 mpl.rcParams['axes.prop_cycle'] = cycler(color='rgbcymk')
@@ -234,5 +268,100 @@ plt.legend(list(range(P+1)))
 plt.ylabel('Distance from previous timestep')
 plt.xlabel('time')
 
+plt.figure()
+plt.plot(range(lseq), thrs.T)
+plt.legend(list(range(P+1)))
+plt.ylabel('Classifier decision boundary')
+plt.xlabel('time')
 
+#%% Decode time in trial
+L = [7]
+rnn = rnns[-3]
+P = Ps[pid]
+
+nseq = 1500
+#clsfr = calibration.CalibratedClassifierCV(svm.LinearSVC(tol=1e-5, max_iter=5000), cv=10)
+clsfr = svm.LinearSVC
+#clsfr = linear_model.LogisticRegression(tol=1e-5, solver='lbfgs', max_iter=1000)
+#clsfr = discriminant_analysis.LinearDiscriminantAnalysis
+cfargs = {'tol': 1e-5, 'max_iter':5000}
+
+# generate training data
+acc, H, I = test_net(rnn, L, nseq, list(range(P)), P, return_hidden=True)
+lseq = H.shape[0]
+
+#H = H.transpose(1,0,2,3).reshape((H.shape[1],-1))
+H = H.squeeze() # lenseq x nneur x nseq
+I = I.squeeze() # lenseq x nseq
+H_flat = H.transpose(1,0,2).reshape((H.shape[1],-1))
+
+ans = np.tile(np.arange(lseq)[:,np.newaxis],(1,H.shape[2]))
+ans_flat = ans.flatten()
+
+# do the decoding
+clf = clsfr(**cfargs)
+clf.fit(H_flat.T, ans_flat)
+
+# test
+acc, H, I = test_net(rnn, L, nseq, list(range(P)), P, return_hidden=True)
+H = H.squeeze() # lenseq x nneur x nseq
+I = I.squeeze() # lenseq x nseq
+H_flat = H.transpose(1,0,2).reshape((H.shape[1],-1))
+
+plt.figure()
+plt.plot(clf.predict(H_flat.T))
+plt.plot(ans_flat, 'k--')
+plt.legend(['predicted time','actual time'])
+plt.xlabel('time point, ordered by position in trial')
+plt.ylabel('position in trial')
+plt.title('Accuracy: %.3f'%clf.score(H_flat.T, ans_flat))
+
+#%%
+C = clf.coef_/la.norm(clf.coef_, axis=-1)[:, np.newaxis]
+inner = C@C.T
+proj = C@H_flat
+intcpt = clf.intercept_/la.norm(clf.coef_, axis=-1)
+
+plt.figure()
+plt.imshow(C.T, cmap='bwr')
+plt.gca().get_images()[0].set_clim([-1,1])
+plt.xlabel('time point')
+plt.ylabel('neuron')
+plt.title('Classifier weights')
+plt.colorbar()
+
+# center the projections around the decision boundary
+fig, axs = plt.subplots(2,int(lseq/2))
+for t in range(lseq):
+    r = round((t+1)/lseq)
+    c = t%int(lseq/2)
+    axs[r,c].hist(proj[t, ans_flat==t], density=True, alpha=0.5, color='r')
+    for tt in range(lseq):
+        if tt != t:
+            axs[r,c].hist(proj[t, ans_flat == tt], density=True, alpha=0.5)
+    axs[r,c].set_title('Time %d'%t)
+    axs[r,c].legend(np.concatenate(([t], np.setdiff1d(range(lseq),t))))
+    axs[r,c].plot([intcpt[t], intcpt[t]], axs[r,c].get_ylim(), 'k-')
+    if c!=0:
+        axs[r,c].set_yticks([])
+    if r!=1:
+        axs[r,c].set_xticks([])
+    axs[r,c].set_xlabel('Proj onto t=%d  weights'%t)
+
+
+## <whinging>
+## I'm a real big fan of how there is a set of methods in mpl.pyplot, and the 
+## TOTALLY EQUIVALENT methods in mpl.axes.Axes mostly have DIFFERENT NAMES
+## it makes my life SO MUCH EASIER
+##
+## And a side-note on python syntax,
+## To concatenate vector 'a' to matrix 'B' in:
+## numpy: np.concatenate((a[np.newaxis, :], B))
+## matlab: [a, B]
+## </whinging>
+
+#%% 
+    
+    
+    
 
