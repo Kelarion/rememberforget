@@ -2,7 +2,7 @@
 Classes used in the Remember-Forget experiments.
  
 Includes:
-    - RNNModel: class that currently supports {'LSTM', 'GRU', 'tanh', 'relu'}
+    - RNNModel: class that currently supports {'LSTM', 'GRU', 'tanh', 'relu','tanh-GRU', 'relu-GRU'}
     recurrent neural networks. includes a save, load, and train method.
     - stateDecoder: does the memory decoding. includes a train method.
 
@@ -30,11 +30,14 @@ class RNNModel(nn.Module):
 
         if embed:
             self.encoder = nn.Embedding(ntoken, ninp)
+        else:
+            self.encoder = Indicator(ntoken, ninp) # defined below
+            
         if rnn_type in ['LSTM', 'GRU']:
             self.rnn = getattr(nn, rnn_type)(ninp, nhid, nlayers)
         elif rnn_type in ['tanh-GRU', 'relu-GRU']:
             nlin = getattr(torch, rnn_type.split('-GRU')[0])
-            self.rnn = GatedGRU(ninp, nhid, nlayers, nonlinearity=nlin)
+            self.rnn = GatedGRU(ninp, nhid, nlayers, nonlinearity=nlin) # defined below
         else:
             try:
                 self.rnn = nn.RNN(ninp, nhid, nlayers, nonlinearity=rnn_type)
@@ -165,14 +168,14 @@ class RNNModel(nn.Module):
         print('~'*5)
         return loss_
 
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
 #%% Custom GRU by Miguel
-# class Dim(IntEnum):
-    # batch = 0
-    # seq = 1
-    # feature = 2
-
 class GatedGRU(nn.Module):
-    """Tokens must be passed into the network"""
+    """
+    A GRU class which gives access to the gate activations during a forward pass
+
+    Modified from Miguel A Del Rio
+    """
     def __init__(self, input_size, hidden_size, num_layers, nonlinearity=torch.tanh):
         """Mimics the nn.GRU module. Currently num_layers is not supported"""
         super().__init__()
@@ -243,6 +246,35 @@ class GatedGRU(nn.Module):
         else:
             return output, h_t
 
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+#%% encoder
+class Indicator(nn.Module):
+    """
+    class to implement indicator function (i.e. one-hot encoding)
+    it's a particular type of embedding, which isn't trainable
+    """
+    def __init__(self, ntoken, ninp):
+        super().__init__()
+        self.ntoken = ntoken
+
+    def forward(self, x):
+        """
+        Convert list of sequences x to an indicator (i.e. one-hot) representation
+        extra dimensions are added at the end
+        """
+
+        def all_idx(idx, axis):
+            """ from stack exchange"""
+            grid = np.ogrid[tuple(map(slice, idx.shape))]
+            grid.insert(axis, idx)
+            return tuple(grid)
+        
+        out = np.zeros(x.shape + (self.ntoken,), dtype = int)
+        out[all_idx(x, axis=2)] = 1
+        out = torch.tensor(out).type(torch.FloatTensor)
+        return out
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
 #%% decoder
 class stateDecoder(nn.Module):
     """
@@ -277,7 +309,7 @@ class stateDecoder(nn.Module):
         
         return decoded
 
-    def is_memory_active(seq, mem):
+    def is_memory_active(self, seq, mem):
         """
         Returns step function for whether mem is 'active' in seq
         """
@@ -344,5 +376,3 @@ class stateDecoder(nn.Module):
         print('~'*5)
         
         return loss_
-
-
