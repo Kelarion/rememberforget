@@ -146,7 +146,7 @@ class RNNModel(nn.Module):
                 
                 loss = criterion(output.squeeze(0),labs.long().squeeze()) # | || || |_
                 loss.backward()
-                
+                return loss
                 self.optimizer.step()
                 
                 # update loss
@@ -185,19 +185,29 @@ class GatedGRU(nn.Module):
         # self.embedding = nn.Embedding(input_size, embedding_size)
 
         # update gate
-        self.W_iu = Parameter(torch.Tensor(input_size, hidden_size))
-        self.W_hu = Parameter(torch.Tensor(hidden_size, hidden_size))
-        self.b_u = Parameter(torch.Tensor(hidden_size))
+        # self.W_iu = Parameter(torch.Tensor(input_size, hidden_size))
+        # self.W_hu = Parameter(torch.Tensor(hidden_size, hidden_size))
+        # self.b_u = Parameter(torch.Tensor(hidden_size))
 
-        # reset gate
-        self.W_ir = Parameter(torch.Tensor(input_size, hidden_size))    
-        self.W_hr = Parameter(torch.Tensor(hidden_size, hidden_size))
-        self.b_r = Parameter(torch.Tensor(hidden_size))
+        # # reset gate
+        # self.W_ir = Parameter(torch.Tensor(input_size, hidden_size))    
+        # self.W_hr = Parameter(torch.Tensor(hidden_size, hidden_size))
+        # self.b_r = Parameter(torch.Tensor(hidden_size))
 
-        # hidden state
-        self.W_ih = Parameter(torch.Tensor(input_size, hidden_size))
-        self.W_hh = Parameter(torch.Tensor(hidden_size, hidden_size))
-        self.b_h = Parameter(torch.Tensor(hidden_size))
+        # # hidden state
+        # self.W_ih = Parameter(torch.Tensor(input_size, hidden_size))
+        # self.W_hh = Parameter(torch.Tensor(hidden_size, hidden_size))
+        # self.b_h = Parameter(torch.Tensor(hidden_size))
+
+        # input weights
+        self.W_ih = Parameter(torch.Tensor(3*hidden_size, input_size))
+
+        # hidden weights
+        self.W_hh = Parameter(torch.Tensor(3*hidden_size, hidden_size))
+
+        # bias
+        self.b_ih = Parameter(torch.Tensor(3*hidden_size)) # input
+        self.b_hh = Parameter(torch.Tensor(3*hidden_size)) # hidden
 
         # self.decoder = nn.Linear(hidden_size, output_size)
         self.f = nonlinearity
@@ -206,10 +216,8 @@ class GatedGRU(nn.Module):
 
     def init_weights(self):
         for p in self.parameters():
-            if p.data.ndimension() >= 2:
-                nn.init.xavier_uniform_(p.data)
-            else:
-                nn.init.zeros_(p.data)
+            k = np.sqrt(self.hidden_size)
+            nn.init.uniform_(p.data, -k, k)
 
     # def init_hidden(self):
     #     h_t = torch.zeros(self.hidden_size)
@@ -226,14 +234,23 @@ class GatedGRU(nn.Module):
         h_t = init_state
 
         for t in range(seq_sz): # iterate over the time steps
-            x_t = x[:, t, :]
-            # x_t = self.embedding(x_t)
+            x_t = x[t, :, :]
 
-            z_t = torch.sigmoid(x_t @ self.W_iu + h_t @ self.W_hu + self.b_u)
+            gi = F.linear(x_t, self.W_ih, self.b_ih) # do the matmul all together
+            gh = F.linear(h_t, self.W_hh, self.b_hh)
 
-            r_t = torch.sigmoid(x_t @ self.W_ir + h_t @ self.W_hr + self.b_r)
+            i_r, i_z, i_n = gi.chunk(3,1) # input currents
+            h_r, h_z, h_n = gh.chunk(3,2) # hidden currents
+            
+            r_t = torch.sigmoid(i_r + h_r)
+            z_t = torch.sigmoid(i_z + h_z)
+            h_t = (1 - z_t)*h_t + z_t*self.f(i_n + r_t * h_n)
 
-            h_t = (1 - z_t) * h_t + z_t * self.f(x_t @ self.W_ih + (r_t * h_t) @ self.W_hh + self.b_h)
+            # z_t = torch.sigmoid(x_t @ self.W_iu + h_t @ self.W_hu + self.b_u)
+
+            # r_t = torch.sigmoid(x_t @ self.W_ir + h_t @ self.W_hr + self.b_r)
+
+            # h_t = (1 - z_t) * h_t + z_t * self.f(x_t @ self.W_ih + (r_t * h_t) @ self.W_hh + self.b_h)
 
             update_gates[t,:,:] = z_t
             reset_gates[t,:,:] = r_t

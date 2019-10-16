@@ -11,11 +11,13 @@ from itertools import compress, permutations
 #import multiprocessing
 import numpy as np
 import scipy.special as spc
+from students import RNNModel
 
 #%%
 def train_and_test(rnn_type, N, P, Ls, nseq, ntest, explicit=True,
                    nlayers=1, pad=None, dlargs=None, optargs=None,
-                   criterion=None, alg=None, be_picky=False, verbose=True):
+                   criterion=None, alg=None, be_picky=False, nepoch=2000,
+                   verbose=True):
     """
     function to reduce clutter below
     """
@@ -34,7 +36,6 @@ def train_and_test(rnn_type, N, P, Ls, nseq, ntest, explicit=True,
         Ls = [Ls]
     
     # optimisation parameters
-    nepoch = 2000               # max how many times to go over data
     if alg is None:
         alg = optim.Adam
     if dlargs is None:
@@ -57,8 +58,8 @@ def train_and_test(rnn_type, N, P, Ls, nseq, ntest, explicit=True,
         print('TRAINING %s NETWORK' % str(Ls))
     
     nums, ans, numstest, anstest = make_dset(Ls, AB, int(nseq/len(Ls)), 
-                                             ntest, 
-                                             forget_switch,
+                                             ntest=0, 
+                                             forget_switch=forget_switch,
                                              padding=pad)
     
     ptnums = torch.tensor(nums).type(torch.LongTensor)
@@ -75,7 +76,7 @@ def train_and_test(rnn_type, N, P, Ls, nseq, ntest, explicit=True,
         print('TESTING %s NETWORK' % str(Ls))
     
     
-    accuracy = test_net(rnn, list(range(2,11)), AB, forget_switch)
+    accuracy = test_net(rnn, list(range(2,11)), ntest, AB, forget_switch)
     
     if verbose:
         print('- '*20)
@@ -130,7 +131,7 @@ def test_net(rnn, these_L, ntest, AB, forget_switch,
         accuracy[j] = np.mean(test_nums[np.arange(n_test), whichone] == test_ans.flatten())  
 
     if return_hidden:
-        H = H.detach().numpy()
+#        H = H.detach().numpy()
         return accuracy, H, inputs
     else:
         return accuracy

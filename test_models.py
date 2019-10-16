@@ -22,7 +22,7 @@ from needful_functions import *
 fracs = [1,2,3,4,5,6,7,8,9,10,15,20,30]
 Ps = [10]
 L_ = 5
-rnn_type = 'GRU'
+rnn_type = 'tanh-GRU'
 smoothening = 12
 
 accuracy = np.zeros((len(Ps),len(fracs),9))*np.nan
@@ -59,7 +59,7 @@ for i,P in enumerate(Ps):
 #        test_L.insert(0,2)
 #        test_L = list(range(2,P))
         
-        results = test_net(rnn, test_L, 500, list(range(P)), P)
+#        results = test_net(rnn, test_L, 500, list(range(P)), P)
         
         print('done testing N=%d, P=%d network'%(N,P))
         
@@ -71,7 +71,7 @@ for i,P in enumerate(Ps):
 
 loss_smooth = np.apply_along_axis(np.convolve,-1,loss,np.ones(smoothening),'same')
 #%% 
-pid = 2
+pid = 0
 cmap_name = 'ocean'
 cols = getattr(cm, cmap_name)(np.linspace(0,1,len(fracs)))
 mpl.rcParams['axes.prop_cycle'] = cycler(color=cols)
