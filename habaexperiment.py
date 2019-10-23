@@ -18,6 +18,7 @@ CODE_DIR = r'/home/matteo/Documents/github/rememberforget/'
 import getopt, sys
 sys.path.append(CODE_DIR)
 
+import math
 import torch
 import torch.optim as optim
 import numpy as np
@@ -59,10 +60,16 @@ if type(N) is float:
 # parameters
 explicit = True  
 
-nlayers = 1                 # number of recurrent networks
+nlayers = 1            # number of recurrent networks
 rnn_type = 'GRU'
-be_picky = True             # should we only use unique data?
+embed = False          # use trainable embedding (T) or indicator (F)
+be_picky = True        # should we only use unique data?
 
+lmax = L if type(L) is int else max(L)
+if be_picky and (math.factorial(lmax)/math.factorial(P-lmax))>1e7:
+    be_picky = False
+    print('Hey! What are you doing!? That"s too many sequences, my friend.')
+    
 nseq = 5000
 ntest = 500
 pad = -1
@@ -89,6 +96,7 @@ fixed_args = {'rnn_type': rnn_type,
               'alg': alg,
               'nepoch': nepoch,
               'be_picky': be_picky,
+              'train_embedding': embed,
               'verbose': verbose} # all the arguments we don't iterate over
 
 #iter_args = product(Ns,Ps,Ls)
@@ -102,15 +110,25 @@ loss, accuracy, rnn = train_and_test(N=N, P=P, Ls=L, **fixed_args)
 #                                     **fixed_args) for n,ab,l in iter_args)
 
 # save results
+folds = ''
+if explicit:
+    folds += 'explicit/'
+else:
+    folds += 'implicit/'
+if embed:
+    folds += 'embedded/'
+#else:
+#    folds += 'indicator/'
+
 params_fname = 'parameters_%d_%d_%s.pt'%(N, P, rnn_type)
 loss_fname = 'loss_%d_%d_%s.npy'%(N, P, rnn_type)
 accy_fname = 'accuracy_%d_%d_%s.npy'%(N, P, rnn_type)
 rnn_specs_fname = 'rnn_specs_%d_%d_%s.npy'%(N, P, rnn_type)
 
-rnn.save(CODE_DIR+'results/'+params_fname)
-with open(CODE_DIR+'results/' +loss_fname, 'wb') as f:
+rnn.save(CODE_DIR+'results/'+folds+params_fname)
+with open(CODE_DIR+'results/'+folds+loss_fname, 'wb') as f:
     np.save(f, loss)
-with open(CODE_DIR+'results/'+accy_fname, 'wb') as f:
+with open(CODE_DIR+'results/'+folds+accy_fname, 'wb') as f:
     np.save(f, accuracy)
 #with open(CODE_DIR+'results/'+rnn_specs_fname, 'wb') as f:
 #    np.save(f, accuracy)
