@@ -14,25 +14,34 @@ import scipy.special as spc
 from students import RNNModel
 
 #%%
-def train_and_test(rnn_type, N, P, Ls, nseq, ntest, explicit=True,
-                   nlayers=1, pad=-1, dlargs=None, optargs=None,
-                   criterion=None, alg=None, be_picky=False, nepoch=2000,
-                   train_embedding=True, verbose=True):
+def train_and_test(rnn_type, N, P, Ls, nseq, ntest, nlayers=1, pad=-1, 
+                   expargs=None, dlargs=None, optargs=None,
+                   criterion=None, alg=None, nepoch=2000, dead_time=None,
+                   train_embedding=False, persistent=False, 
+                   return_data=False, verbose=True):
     """
-    function to reduce clutter below
+    function to reduce clutter 
     """
     
     AB = list(range(P))
-    nneur = N                  # size of recurrent network
-    if explicit:
-        forget_switch =  max(AB)+1
-    else:
-        forget_switch = None
-    
-    ninp = len(AB)              # dimension of RNN input
+    nneur = N             # size of recurrent network
+    ninp = P              # dimension of RNN input
     
     if type(Ls) is not list:
         Ls = [Ls]
+    
+    ## DEFAULTS --------------------------------
+    # sequence parameters
+    if expargs is None: # parameters for `draw_seqs`
+        expargs = {} # will propagate function defaults
+        expargs['explicit'] = True
+        expargs['be_picky'] = False
+        if verbose:
+            print('Using default sequence parameters'
+                  'be_picky: false, context_cue: explicit')
+
+    explicit = expargs['explicit']
+    be_picky = expargs['be_picky']
     
     # optimisation parameters
     if alg is None:
@@ -45,51 +54,59 @@ def train_and_test(rnn_type, N, P, Ls, nseq, ntest, explicit=True,
         optargs = {'lr': 5e-4}      # optimiser args
     if criterion is None:
         criterion = torch.nn.NLLLoss()
+    # -------------------------------------------
     
-    if forget_switch is not None:
+    if explicit or persistent:
         ninp += 1
-        AB_ = AB+[forget_switch] # extended alphabet
-    else:
-        AB_ = AB
+    
+    # check this before proceding
+    if be_picky and (math.factorial(max(Ls))/math.factorial(P-max(Ls)))>1e7:
+        be_picky = False
+        print("Hey! What are you doing!? That's too many sequences, my friend.")
     
     # train and test
     if verbose:
         print('TRAINING %s NETWORK' % str(Ls))
     
     nums, ans, numstest, anstest = make_dset(Ls, AB, int(nseq/len(Ls)), 
-                                             ntest=int(ntest/len(Ls)), 
-                                             forget_switch=forget_switch,
-                                             padding=-1,
-                                             be_picky=be_picky)
-    nums[nums==-1] = pad
+                                             ntest=int(ntest/len(Ls)),
+                                             padding=pad,
+                                             dead_time=dead_time,
+                                             expargs=expargs)
+#    nums[nums==-1] = pad
     
     ptnums = torch.tensor(nums).type(torch.LongTensor)
     ptans = torch.tensor(ans).type(torch.FloatTensor)
     
     # specify model and loss
-    rnn = RNNModel(rnn_type, len(AB_), ninp, nneur, nlayers, embed = train_embedding)
+    rnn = RNNModel(rnn_type, ninp, ninp, nneur, nlayers, 
+                   embed=train_embedding, persistent=persistent,
+                   padding=pad)
     
     loss_ = rnn.train(ptnums, ptans, optargs, dlargs, algo=alg, 
                       nepoch=nepoch, criterion=criterion,
-                      do_print=False, epsilon=5e-4, padding=pad)
+                      do_print=False, epsilon=5e-4)
     
     if verbose:
         print('TESTING %s NETWORK' % str(Ls))
     
-    if be_picky:
-        accuracy = test_net(rnn, AB, test_data=(numstest, anstest), 
-                            forget_switch=forget_switch)
+    if be_picky: # ensure that test set is different
+        accuracy = test_net(rnn, AB, test_data=(numstest, anstest),
+                            dead_time=dead_time, **expargs)
     else:
-        accuracy = test_net(rnn, AB, Ls, ntest, forget_switch=forget_switch)
+        accuracy = test_net(rnn, AB, Ls, ntest, dead_time=dead_time **expargs)
     
     if verbose:
         print('- '*20)
     
-    return loss_, accuracy, rnn
+    if return_data:
+        return loss_, accuracy, rnn, (nums, ans, numstest, anstest)
+    else:
+        return loss_, accuracy, rnn
 
 def test_net(rnn, AB, these_L=None, ntest=None, test_data=None, padding=-1,
-             explicit=True, forget_switch=None, verbose=False, 
-             return_hidden=False, give_gates=False):
+             verbose=False, return_hidden=False, give_gates=False, dead_time=None,
+             **expargs):
     """
     Run `rnn` on `ntest` sequences of L in `these_L`, drawn from alphabet `AB` 
     Returns the accuracy on the test sequences, and optionally the hidden 
@@ -103,122 +120,101 @@ def test_net(rnn, AB, these_L=None, ntest=None, test_data=None, padding=-1,
     Outputs in order: (accuracy, hidden, inputs, (update, reset))
     """
     
-    if explicit and forget_switch is None:
-        forget_switch = max(AB)+1
-    elif not explicit:
-        forget_switch = None
+#    if (ntest is None) and (test_data is None):
+#        raise(ValueError)
     
-#    lseqmax = 2*max(these_L)-1*(not explicit)
-    
-#    accuracy = np.zeros(len(these_L))
-#    if return_hidden:
-#        H = torch.zeros(lseqmax, rnn.nhid, ntest, len(these_L))
-#        inputs = np.zeros((lseqmax, ntest, len(these_L)))
-#    if give_gates:
-#        Z = torch.zeros(lseqmax, rnn.nhid, ntest, len(these_L))
-#        R = torch.zeros(lseqmax, rnn.nhid, ntest, len(these_L))
-#    
     if ntest is not None:
-        test_nums, test_ans, _, _ = make_dset(these_L, AB, ntest, 0, 
-                                              forget_switch=forget_switch,
-                                              be_picky=False, 
-                                              padding=padding)
+        test_nums, test_ans, _, _ = make_dset(these_L, AB, ntest, 0,
+                                              padding=rnn.padding,
+                                              dead_time=dead_time,
+                                              expargs=expargs)
     else:
         test_nums, test_ans = test_data
-        ntest = test_nums.shape[0]
-        
-    ignore = test_nums==padding
+    
+    Ntest = test_nums.shape[0]
+
+    ignore = torch.tensor(test_nums==rnn.padding)
     test_inp = torch.tensor(test_nums).type(torch.LongTensor)
-    test_inp[ignore] = 0
-    test_inp = test_inp.transpose(0,1)
-    
+#    print(test_inp.shape)
+#    print(ignore.shape)
+#    test_inp[ignore] = 0
+    test_inp = test_inp.transpose(0,1) # lseq x ntest
     lseq = (~ignore).sum(1)
-    t_final = lseq-1 # which is the final timestep
+    t_final = -(np.fliplr(test_nums!=rnn.padding).argmax(1)+1) # which is the final timestep
+    lmax = test_nums.shape[1]
     
-    # actually test
-    hid = rnn.init_hidden(test_inp.shape[1])
-            
+    # test predictions
+    if return_hidden:
+        H = torch.zeros(test_nums.shape[1], rnn.nhid, Ntest)
     if give_gates:
-        out, H, ZR = rnn(test_inp, hid, give_gates=True)
-        Z, R = ZR
-        O = torch.exp(out)
-    else:
-        out, H = rnn(test_inp, hid)
-        O = torch.exp(out)
+        Z = torch.zeros(lmax, rnn.nhid, Ntest)
+        R = torch.zeros(lmax, rnn.nhid, Ntest)
     
-#    for j, l in enumerate(these_L):
-#        if verbose:
-#            print('On L = %d' %(l))
-#        test_nums, test_ans = draw_seqs(l, ntest, Om=AB,
-#                                        switch=forget_switch,
-#                                        be_picky=False)
-#        n_test, lseq = test_nums.shape
-#        if return_hidden:
-#            inputs[:lseq,:,j] = test_nums.T
+    hid = rnn.init_hidden(test_inp.shape[1])
+    if return_hidden or give_gates:
+        # because pytorch only returns hidden activity in the last time step,
+        # we need to unroll it manually. 
+        O = torch.zeros(lmax, Ntest, rnn.decoder.out_features)
+        emb = rnn.encoder(test_inp)
+        for t in range(lmax):
+            if give_gates:
+                out, hid, ZR = rnn.rnn(emb[t:t+1,...], hid, give_gates=True)
+                Z[t,:,:] = ZR[0].squeeze(0).T
+                R[t,:,:] = ZR[1].squeeze(0).T
+            else:
+                out, hid = rnn.rnn(emb[t:t+1,...], hid)
+            dec = rnn.softmax(rnn.decoder(out))
+            H[t,:,:] = hid.squeeze(0).T
+            O[t,:,:] = dec.squeeze(0)
+    else: # this is faster somehow
+        O, _ = rnn(test_inp, hid)
         
-#        O = torch.zeros(lseq, l, n_test)
-#        for inp in range(n_test):
-#            
-#            tst = test_nums[inp,:]
-#            
-#            enc = tst
-#            test_inp = torch.tensor(enc).type(torch.LongTensor)
-#            
-#            hid = rnn.init_hidden(1)
-#            for t in range(lseq):
-#                if give_gates:
-#                    out, hid, ZR = rnn(test_inp[t:t+1,...], hid, give_gates=True)
-#                    Z[t,:,inp,j] = ZR[0].squeeze()
-#                    R[t,:,inp,j] = ZR[1].squeeze()
-#                else:
-#                    out, hid = rnn(test_inp[t:t+1,...], hid)
-#                O[t,:,inp] = torch.exp(out[0,0,tst[:l]])
-#                if return_hidden:
-#                    H[t,:,inp, j] = hid.squeeze()
-    
     O = O.detach().numpy()
-    O_T = O[t_final,np.arange(ntest),:] # output at final timestep
+    O_T = O[t_final,np.arange(Ntest),:] # output at final timestep
     whichone = O_T.argmax(1) # network's answer
 
     accuracy = [np.mean(whichone[lseq==l] == test_ans[lseq==l]) for l in np.unique(lseq)]
     
-#    accuracy = np.mean(test_nums[np.arange(ntest), whichone] == test_ans.flatten())
-#    whichone = np.argmax(O[-1,:,:],axis=0) # index in sequence of unique number
-#    accuracy = np.mean(test_nums[np.arange(n_test), whichone] == test_ans.flatten())  
-    
+    # collect for output
     outputs = (accuracy, )
     if return_hidden:
         H = H.detach().numpy()
-        outputs += (H, test_nums)
+        outputs += (H, test_nums.T)
     if give_gates:
         outputs += (Z.detach().numpy(), R.detach().numpy())
     
     return outputs
 
 #%%
-def make_dset(Ls, AB, nseq, ntest, forget_switch=None, padding=0, be_picky=False):
+def make_dset(Ls, AB, nseq, ntest, padding=-1, dead_time=None, expargs={}):
     """
     Wrapper for draw_seqs, which concatenates sequences of multiple lengths into
     a single dataset. Fills extra space with `padding`, which you should keep
-    track of when you feed this data into an RNN.
+    track of when you feed this data into an RNN. Specifically, the value of 
+    `padding` should be the same as `padding` in the RNNModel.train method.
+    (The defaults in both functions are matched, so don't worry about it.)
     
     If `be_picky=True`, then train and test sets are disjoint -- but heed the 
     warning in the `draw_seqs` help text.
     
+    `dead_time` specifies the total amount of time spent after tokens are
+    presented -- i.e. how much time to distribute across 
+    
     returns seqs, ans, test_seqs, test_ans
     """
-    lseq_max = 2*max(Ls)-1
-    if forget_switch is not None:
-        lseq_max += 1
-        
+    lseq_max = 2*max(Ls)
+
+#    dset_nums = []
+#    dset_nums_test = []
+#    dset_ans = []
+#    dset_ans_test = []
     dset_nums = np.zeros((0,lseq_max))
     dset_nums_test = np.zeros((0,lseq_max))
     dset_ans = np.zeros(0)
     dset_ans_test = np.zeros(0)
     
     for l in Ls:
-        nums, ans = draw_seqs(l, nseq+ntest, Om=AB, switch=forget_switch,
-                              be_picky=be_picky)
+        nums, ans = draw_seqs(l, nseq+ntest, Om=AB, **expargs)
 #        print('drawn')
         if nums.shape[0] < nseq+ntest:
             Nseq = int(nseq*nums.shape[0]/(nseq+ntest))
@@ -235,15 +231,49 @@ def make_dset(Ls, AB, nseq, ntest, forget_switch=None, padding=0, be_picky=False
         test_seqs = np.pad(nums[tests,:], ((0,0),(0,lseq_max-nums.shape[1])),
                            'constant', constant_values=padding)
 #        print('padded')
+#        if Ls.index(l) == 0:
+#            dset_nums = train_seqs
+#            dset_ans = ans[trains]
+#            dset_nums_test = test_seqs
+#            dset_ans_test = ans[tests]
+#        else: 
         dset_nums = np.append(dset_nums, train_seqs, axis=0)
         dset_ans = np.append(dset_ans, ans[trains])
-        
         dset_nums_test = np.append(dset_nums_test, test_seqs, axis=0)
         dset_ans_test = np.append(dset_ans_test, ans[tests])
+        
+#        dset_nums += train_seqs.tolist()
+#        dset_ans += ans[trains].tolist()
+#        
+#        dset_nums_test += test_seqs.tolist()
+#        dset_ans_test += ans[tests].tolist()
+    
+    dset_nums = dset_nums[:, ~np.all(dset_nums==padding, axis=0)]
+    dset_nums_test = dset_nums_test[:, ~np.all(dset_nums_test==padding, axis=0)]
+    
+    if dead_time is not None:
+        nT = dset_nums.shape[1] + dead_time
+        
+        _dset_nums = np.ones((dset_nums.shape[0],nT))*padding
+        idx = np.random.rand(dset_nums.shape[0],nT).argsort(1)[:,:(nT-dead_time)]
+        idx = np.sort(idx,1)
+        idx[:,0] = 0
+#        print(idx)
+        np.put_along_axis(_dset_nums, idx, dset_nums, axis=1)
+        dset_nums = _dset_nums
+        
+        if dset_nums_test.shape[0] > 0:
+            _dset_nums_test = np.ones((dset_nums_test.shape[0],nT))*padding
+            idx = np.random.rand(dset_nums_test.shape[0],nT).argsort(1)[:,:(nT-dead_time)]
+            idx = np.sort(idx,1)
+            idx[:,0] = 0
+            np.put_along_axis(_dset_nums_test, idx, dset_nums_test, axis=1)
+            dset_nums_test = _dset_nums_test
     
     return dset_nums, dset_ans, dset_nums_test, dset_ans_test
 
-def draw_seqs(L, N, Om, switch=-1, be_picky=False, mirror=False):
+def draw_seqs(L, N, Om, mirror=False, explicit=True, be_picky=False,
+              signal_tokens=None):
     """
     Draw N sequences of length 2L, such that L-1 elements occur twice, and
     all elements are drawn from Om.
@@ -254,34 +284,71 @@ def draw_seqs(L, N, Om, switch=-1, be_picky=False, mirror=False):
         - please please please consider how many sequences you're generating
             * at some point, we need to index the set of all possible 
               permutations of Om of length L, so that gets big quickly
-            * roughly: don't be picky if |Om|!/(|Om|-L)! > ~10^7
+            * roughly: don't be_picky if |Om|!/(|Om|-L)! > ~10^7
     
-    ToDo: 
+    Supplying `signal_tokens` will further restrict the sequences to those with
+    non-repeated tokens that are members of signal_tokens. For example, if 
+    signal_tokens = [0,1] then only 0 or 1 will be non-repeated. Right now, 
+    this only works for be_picky=True, and takes substantially longer. In any
+    case, this will severely restrict the number of unique sequences available.
+    
+    TODO: 
         Currently the repetitions are all at the end -- maybe we'll change this
     """
-        
+    if signal_tokens is None:
+        signal_tokens = Om
+
+    if explicit:
+        forget_switch = len(Om)
+    else:
+        forget_switch= None
+    
+    P = len(Om)
+    X = len(signal_tokens)
+#    print(X)
     if be_picky:
-        maxseq = unique_seqs(len(Om), L, mirror)
+        maxseq = unique_seqs(P, L, X, mirror)
         if N > maxseq: # if P and L are sufficiently small
             N = maxseq
-            
+        
         # select a random subset of all permutations of length L (or all of them)
         # (we'll take different strategies for subsampling and exhaustive sampling)
-        nperm = math.factorial(len(Om))/math.factorial(len(Om)-L) # number of permutations
+        nperm_tot = math.factorial(P)/math.factorial(P-L)
+        nperm = round(pintersection(P,L,X)*nperm_tot) # number of permutations
         if N == maxseq:
             npfx = nperm
         else:
-            npfx = np.ceil(N/L) # number of 'prefixes'
-        
-        perms = permutations(Om, L) # there are many of these
+            if X != P:
+                # compute expected number of sequences per prefix (conditionally)
+#                nx = sum([n*pintersection(P,L,X,n) for n in range(1,X+1)])/pintersection(P,L,X)
+                # get minimum possible number of 
+                nx = min([n for n in range(1,X+1) if pintersection(P,L,X,n)>0])
+                npfx = np.ceil(N/nx)
+            else:
+                npfx = np.ceil(N/L) # number of 'prefixes'
+
+#        def checkifin(x,signal):
+#            return np.any(np.isin(x, signal))
+        if X != P:
+            checkifin = lambda x:np.any(np.isin(x, range(X)))
+            perms = filter(checkifin,permutations(Om, L)) # there are many of these
+        else:
+            perms = permutations(Om, L)
+        # select a random subset of permutations
         pinds = np.random.permutation(np.arange(nperm)<npfx) # shuffled binary indexing
         toks = np.array(list(compress(perms, pinds))) # select random elements of permutations
         
-        toks = np.repeat(toks, L, axis=0)
-
         # choose the non-repeated tokens
         inds = (np.tile(np.eye(L), int(min([nperm,npfx]))).T > 0)
 
+        if X != P:
+            sig_toks = np.isin(toks, range(X)) # ensure we only select 'signal' tokens
+            inds = inds[sig_toks.flatten(),:] # as the non-repeated ones
+        
+            toks = np.repeat(toks, sig_toks.sum(1), axis=0)
+        else:
+            toks = np.repeat(toks, L, axis=0)
+        
         A = toks[inds]
         skot = toks[inds==0].reshape((-1, L-1))
         if npfx >= nperm: # i.e. we need more 
@@ -302,18 +369,19 @@ def draw_seqs(L, N, Om, switch=-1, be_picky=False, mirror=False):
                 skot = np.fliplr(skot) 
             else:
                 skot = scramble(skot, axis=0)
-                
-        if switch is not None:
-            skot = np.insert(skot, 0, switch, axis=1)
-            
+        
+        if forget_switch is not None:
+            skot = np.insert(skot, 0, forget_switch, axis=1)
+
         S = np.concatenate((toks, skot), axis=1)
+
         # scramble
         shf = np.random.choice(S.shape[0], int(N), replace=False)
         S = S[shf,:]
         A = A[shf]
         
     else: # if there are many unique sequences, just take random samples
-        if switch is not None:
+        if forget_switch is not None:
             S = np.zeros((N, 2*L), dtype = int)
         else:
             S = np.zeros((N, 2*L-1), dtype = int)
@@ -326,29 +394,58 @@ def draw_seqs(L, N, Om, switch=-1, be_picky=False, mirror=False):
             skot = np.flip(np.delete(toks,distok))
             if not mirror:
                 skot = skot[np.random.choice(L-1,L-1,replace=False)]
-            if switch is not None:
-                skot = np.append(switch, skot)
+            if forget_switch is not None:
+                skot = np.append(forget_switch, skot)
             S[n,:] = np.append(toks,skot)
             A[n] = toks[distok]
             
     return S, A
 
-#%% helpers
-def as_indicator(x, Om):
-    """
-    Convert list of sequences x to an indicator (i.e. one-hot) representation
-    extra dimensions are added at the end
-    """
-    def all_idx(idx, axis):
-        """ from stack exchange"""
-        grid = np.ogrid[tuple(map(slice, idx.shape))]
-        grid.insert(axis, idx)
-        return tuple(grid)
-    
-    out = np.zeros(x.shape + (len(Om),), dtype = int)
-    out[all_idx(x, axis=2)] = 1
-    return out
+#%% file I/O
+def expfolders(exp, pers, emb):
+    """Folder hierarchy for organising results
+        - expfolders(explicit?, persistent?, embed?)"""
+    folds = 'results/'
+    if exp:
+        folds += 'explicit/'
+    else:
+        folds += 'implicit/'
+    if pers:
+        folds += 'persistent/'
+    if emb:
+        folds += 'embedded/'
+    return folds
 
+def suffix_maker(N, P, rnn_type, Q=None, dead_time=None):
+    """
+    A consistent naming scheme to make it, supposedly, easier to find outputs
+    of experiments.
+    
+    Will give something like 'X_Y_Z' to be added before the file extension.
+    e.g., I might do 
+        `filename = 'accuracy' + suffix_maker(10, 10, 'GRU') + '.npy'
+        print(filename)`
+    which would output
+        `accuracy_10_10_GRU.npy`
+        
+    Can add further things whenever you want, but for compatibility, try to 
+    keep the `_N_P_rnn` kernel intact -- unless it demonstrably sucks.
+    """
+    suff = '_%d_%d_%s'%(N, P, rnn_type)
+    if Q is not None:
+        suff += '_%d'%Q
+    if dead_time is not None:
+        suff += '_plus%d'%dead_time
+    
+    return suff
+
+##%% plotting
+#def myplot(cmap=None, cols==None, **mplargs):
+#    
+#    
+#    plt.plot(**mplargs)
+
+#%% helpers
 def scramble(a, axis=-1):
     """
     Return an array with the values of `a` independently shuffled along the
@@ -367,13 +464,30 @@ def is_memory_active(seq, mem):
     stp = np.cumsum((seq==mem).astype(int)) % 2
     return stp
 
-def unique_seqs(P, L, mirror = False):
+def unique_seqs(P, L, X=None, mirror = False):
     """
     Return number of unique sequences 
     """
     if mirror:
         maxseq = int(L*math.factorial(P)/math.factorial(P-L))
     else:
-        maxseq = int(math.factorial(L)*math.factorial(P)/math.factorial(P-L))
+        if X is not None:
+            maxseq = math.factorial(P)/math.factorial(P-L)
+            maxseq *= sum([n*pintersection(P,L,X,n) for n in range(1,X+1)])
+            maxseq = int(maxseq)
+        else:
+            maxseq = int(math.factorial(L)*math.factorial(P)/math.factorial(P-L))
     return maxseq
+
+def pintersection(P,L,X,n=None):
+    """
+    Say there is a set with P elements, and a subset of it with X < P elements;
+    this computes the probability that another subset with L elements shares n 
+    elements with the first subset. If n is unspecified, returns prob(n > 0).
+    """
+    if n is None:
+        return 1-spc.binom(P-X,L)/spc.binom(P,L)
+    else:
+        return spc.binom(P,n)*spc.binom(P-X,L-n)*spc.binom(P-n,X-n)/(spc.binom(P,L)*spc.binom(P,X))
+
 

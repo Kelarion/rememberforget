@@ -2,27 +2,35 @@
 Remember-Forget experiments
 
 Take sequences of tokens drawn from an alphabet, return at the end of the sequence
-the token that wasn't repeated. This one is for sending to the cluster.
+the token that wasn't repeated. This script is for sending to the cluster.
 
 Bash arguments:
     -v [--verbose]  set verbose
     -n val          number of neurons (int)
     -p val          size of alphabet (int)
-    -l val          number of tokens (int)
+    -q val          size of subalphabet (int)
+    -l val          number of tokens in sequence (int)
+    -s              flag to save the train/test sets
 """
 
 #%%
-#CODE_DIR = r'/rigel/home/ma3811/remember-forget/'
-CODE_DIR = r'/home/matteo/Documents/github/rememberforget/'
+import socket
+import os
 
+if socket.gethostname() == 'kelarion':
+    CODE_DIR = r'/home/matteo/Documents/github/rememberforget/'
+else:    
+    CODE_DIR = r'/rigel/home/ma3811/remember-forget/'
+    
 import getopt, sys
 sys.path.append(CODE_DIR)
 
 import math
+import pickle
 import torch
 import torch.optim as optim
 import numpy as np
-from students import RNNModel, stateDecoder
+from students import RNNModel
 from needful_functions import *
 
 #%% parse arguments
@@ -30,15 +38,28 @@ allargs = sys.argv
 
 arglist = allargs[1:]
 
-unixOpts = "vn:p:l:"
+unixOpts = "vsn:p:l:q:"
 gnuOpts = ["verbose"]
 
 opts, _ = getopt.getopt(arglist, unixOpts, gnuOpts)
 
-verbose, N, P, L = False, 10, 10, 5 # defaults
+if len(opts) == 0:
+    sys.exit('No arguments supplied! I`m guessing you wanted the help text: \n'
+             '\n'
+             'Command-line arguments: \n'
+             ' -v, --verbose   set verbose \n'
+             ' -n val          number of neurons (int) \n'
+             ' -p val          size of alphabet (int) \n'
+             ' -l val          number of tokens in sequence (int) \n'
+             ' -q val          size of subalphabet (int); default None \n'
+             ' -s              flag to save the train/test sets; default False \n')
+
+verbose, save_sets, N, P, L, Q = False, False, 10, 10, 5, None # defaults
 for op, val in opts:
     if op in ('-v','--verbose'):
         verbose = True
+    if op in ('-s'):
+        save_sets = True
     if op in ('-n'):
         try:
             N = int(val)
@@ -46,6 +67,8 @@ for op, val in opts:
             N = float(val)
     if op in ('-p'):
         P = int(val)
+    if op in ('-q'):
+        Q = int(val)
     if op in ('-l'):
         if ',' in val:
             L = val.split(',')
@@ -57,22 +80,18 @@ if type(N) is float:
     N = int(N*P)
 
 #%% run experiment
-# parameters
-explicit = True  
-
-nlayers = 1            # number of recurrent networks
-rnn_type = 'GRU'
-embed = False          # use trainable embedding (T) or indicator (F)
+# sequence parameters
+explicit = True
 be_picky = True        # should we only use unique data?
-
-lmax = L if type(L) is int else max(L)
-if be_picky and (math.factorial(lmax)/math.factorial(P-lmax))>1e7:
-    be_picky = False
-    print('Hey! What are you doing!? That"s too many sequences, my friend.')
-    
 nseq = 5000
-ntest = 500
+ntest = 100
 pad = -1
+dead_time = 2*P           # how much should 
+# RNN parameters
+rnn_type = 'GRU'
+persistent = False      # encode context as a persistent cue?
+embed = False          # use trainable embedding (T) or indicator (F)
+nlayers = 1            # number of recurrent networks
 
 # optimisation parameters
 nepoch = 2000               # max how many times to go over data
@@ -83,56 +102,64 @@ dlargs = {'num_workers': 2,
 optargs = {'lr': 5e-4}      # optimiser args
 criterion = torch.nn.NLLLoss()
 
+# organise the low-level arguments, i.e. things passed down to `draw_seqs`
+if Q is not None:
+    sig_toks = list(range(Q))
+else:
+    sig_toks = None
 
-# organise arguments for multiprocessing
+expargs = {'explicit': explicit,
+           'be_picky': be_picky,
+           'signal_tokens': sig_toks}  # possible output tokens
+
+# package (for saving later?)
 fixed_args = {'rnn_type': rnn_type,
-              'explicit': explicit,
               'nseq': nseq,
               'ntest': ntest,
               'nlayers': nlayers,
               'pad': pad,
               'dlargs': dlargs,
               'optargs': optargs,
+              'expargs': expargs,
               'alg': alg,
               'nepoch': nepoch,
-              'be_picky': be_picky,
+              'dead_time': dead_time,
               'train_embedding': embed,
-              'verbose': verbose} # all the arguments we don't iterate over
-
-#iter_args = product(Ns,Ps,Ls)
+              'persistent': persistent,
+              'verbose': verbose,
+              'return_data': save_sets} # why do I do this, actually?
 
 print('Starting with N=%d, P=%d ...'%(N, P))
-loss, accuracy, rnn = train_and_test(N=N, P=P, Ls=L, **fixed_args)
-#num_cores = multiprocessing.cpu_count()
-#parfor = Parallel(n_jobs=num_cores, verbose=5)
-#
-#out = parfor(delayed(train_and_test)(N=n, AB=ab, Ls=l, 
-#                                     **fixed_args) for n,ab,l in iter_args)
+if save_sets:
+    loss, accuracy, rnn, D = train_and_test(N=N, P=P, Ls=L, **fixed_args)
+else:
+    loss, accuracy, rnn = train_and_test(N=N, P=P, Ls=L, **fixed_args)
 
 # save results
-folds = ''
-if explicit:
-    folds += 'explicit/'
-else:
-    folds += 'implicit/'
-if embed:
-    folds += 'embedded/'
-#else:
-#    folds += 'indicator/'
+FOLDERS = expfolders(explicit, persistent, embed)
+expinf = suffix_maker(N, P, rnn_type, Q, dead_time)
 
-params_fname = 'parameters_%d_%d_%s.pt'%(N, P, rnn_type)
-loss_fname = 'loss_%d_%d_%s.npy'%(N, P, rnn_type)
-accy_fname = 'accuracy_%d_%d_%s.npy'%(N, P, rnn_type)
-rnn_specs_fname = 'rnn_specs_%d_%d_%s.npy'%(N, P, rnn_type)
+if not os.path.isdir(CODE_DIR+FOLDERS):
+    os.mkdir(CODE_DIR+FOLDERS)
 
-rnn.save(CODE_DIR+'results/'+folds+params_fname)
-with open(CODE_DIR+'results/'+folds+loss_fname, 'wb') as f:
+params_fname = 'parameters'+expinf+'.pt'
+loss_fname = 'loss'+expinf+'.npy'
+args_fname = 'arguments'+expinf+'.npy'
+accy_fname = 'accuracy'+expinf+'.npy'
+
+rnn.save(CODE_DIR+FOLDERS+params_fname)
+with open(CODE_DIR+FOLDERS+loss_fname, 'wb') as f:
     np.save(f, loss)
-with open(CODE_DIR+'results/'+folds+accy_fname, 'wb') as f:
+with open(CODE_DIR+FOLDERS+accy_fname, 'wb') as f:
     np.save(f, accuracy)
-#with open(CODE_DIR+'results/'+rnn_specs_fname, 'wb') as f:
-#    np.save(f, accuracy)
+with open(CODE_DIR+FOLDERS+args_fname, 'wb') as f:
+    fixed_args['Ls'] = L
+    np.save(f, fixed_args)
 
+if save_sets:
+    dset_fname = 'datasets'+expinf+'.pkl'
+    with open(CODE_DIR+FOLDERS+dset_fname, 'wb') as f:
+        pickle.dump(D, f, -1)
 
 print('done')    
 print(':' + ')'*12)

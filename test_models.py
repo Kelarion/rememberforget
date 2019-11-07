@@ -4,7 +4,7 @@ svdir = r'~/Documents/uni/columbia/sueyeon/experiments/'
 import sys, os
 sys.path.append(CODE_DIR)
 
-from sklearn import svm, calibration, linear_model, discriminant_analysis
+from sklearn import svm, calibration, linear_model, discriminant_analysis, manifold
 import scipy.stats as sts
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -15,76 +15,95 @@ import scipy.linalg as la
 import umap
 from cycler import cycler
 
-from students import RNNModel, stateDecoder
+from students import RNNModel, LinearDecoder
 
 from needful_functions import *
 
 #%% Load from Habanero experiment
 #fracs = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.5,2.0,3.0]
 fracs = [1,2,3,4,5,6,7,8,9,10,15,20,30]
-Ps = [10]
-L_ = 5
+Ps = [3,4,5,6,7,8,9,10]
+dts = [None, 10, 15, 20, 30, 40, 50, 100]
+#dts = [None]
+Q = None
 rnn_type = 'GRU'
 explicit = True
+persistent = False
 smoothening = 12
 embed = False
+dead_time = None
 
-folds = ''
-if explicit:
-    folds += 'explicit/'
-else:
-    folds += 'implicit/'
-if embed:
-    folds += 'embedded/'
+FOLDERS = expfolders(explicit, persistent, embed)
 
-accuracy = np.zeros((len(Ps),len(fracs),4))*np.nan
-#Ls = np.zeros((len(Ps),9))
+#if Q is not None:
+#    signal_tokens=list(range(Q))
+#else:
+signal_tokens=None
+
+accuracy = np.zeros((len(Ps),len(fracs),max(Ps)+1,len(dts)))*np.nan
+trained_Ls = [[] for _ in Ps]
 loss = np.zeros((len(Ps),len(fracs),200000))
 
-rnns = [[] for _ in range(len(fracs))]
+rnns = [[[] for _ in fracs] for _ in Ps]
 for i,P in enumerate(Ps):
-#    L = int(L_*P/10)
-#    nnnn = int(np.ceil((P-3)/8))
-#    test_L = list(range(2,P))
-#    test_L.insert(4,L)
-#    test_L = [L-2,L,L+2]
-#    test_L += list(range(L+3, P, int(np.ceil((P-L)/2))))
-#    test_L = list(range(2, L-2, int(np.ceil((P-L)/2)))) + test_L
-#    test_L.append(P-1)
-    test_L = [2,3,4,5]
-#    Ls[i,:] = np.array(test_L)
+    test_L = list(range(2,P+1))
     
     for j,N in enumerate(fracs):
-#        N = int(f*P)
         
-        params_fname = 'parameters_%d_%d_%s.pt'%(N, P, rnn_type)
-        loss_fname = 'loss_%d_%d_%s.npy'%(N, P, rnn_type)
-        if not os.path.exists(CODE_DIR+'results/'+folds+loss_fname):
-            print(CODE_DIR+'results/'+folds+loss_fname+' doesn`t exist!')
+        wa = int(P*dead_time) if dead_time is not None else None
+        expinf = suffix_maker(N, P, rnn_type, Q, )
+        params_fname = 'parameters'+expinf+'.pt'
+        loss_fname = 'loss'+expinf+'.npy'
+        args_fname = 'arguments'+expinf+'.npy'
+        accy_fname = 'accuracy'+expinf+'.npy'
+        
+        if not os.path.exists(CODE_DIR+FOLDERS+loss_fname):
+            print(CODE_DIR+FOLDERS+loss_fname+' doesn`t exist!')
             continue
         
-        rnn = RNNModel(rnn_type, P+1*explicit, P+1*explicit, N, 1, embed=embed)
-        rnn.load(CODE_DIR+'results/'+folds+params_fname)
-        rnns[j] = rnn
-#        test_L = [l for l in range(L-3,L+4)]
-#        test_L.append(P)
-#        test_L.insert(0,2)
-#        test_L = list(range(2,P))
-            
-#        results = test_net(rnn, list(range(P)), test_L, 500, explicit=explicit)[0]
+        ninp = P+1*(explicit or persistent)
+        rnn = RNNModel(rnn_type, ninp, ninp, N, 1, embed=embed, 
+                       persistent=persistent)
+        rnn.load(CODE_DIR+FOLDERS+params_fname)
+        rnns[i][j] = rnn
+        
+        for k, _dt in enumerate(dts):
+            if os.path.exists(CODE_DIR+FOLDERS+args_fname):
+                dsargs = np.load(CODE_DIR+FOLDERS+args_fname, allow_pickle=True).item()
+                trained_Ls[i] = dsargs['Ls']
+                if type(dsargs['Ls']) is not list:
+                    dsargs['Ls'] = [dsargs['Ls']]
+                these_L = [l for l in test_L if l not in dsargs['Ls']] # setdiff
+    #            these_L = test_L
+                if len(these_L) != 0:
+                    acc1 = test_net(rnn, list(range(P)), these_L, 500, dead_time=_dt, 
+                                    be_picky=True, signal_tokens=signal_tokens,
+                                    explicit=explicit)[0]
+                    accuracy[i,j,these_L, k] = acc1
+                    
+                acc2 = np.load(CODE_DIR+FOLDERS+accy_fname)
+                accuracy[i,j,dsargs['Ls'], k] = acc2
+                
+            else:
+                acc1 = test_net(rnn, list(range(P)), test_L, 500, dead_time=_dt,
+                                be_picky=True, signal_tokens=signal_tokens,
+                                explicit=explicit)[0]
+                accuracy[i,j,test_L, k] = acc1
+        
+#        Ls[test_L]
         
         print('done testing N=%d, P=%d network'%(N,P))
         
-        los = np.load(CODE_DIR+'results/'+folds+loss_fname)
+        los = np.load(CODE_DIR+FOLDERS+loss_fname)
         idx = np.min([200000, los.shape[0]])
         
         loss[i,j,:idx] = los[:idx]
-#        accuracy[i,j,:] = results
 
 loss_smooth = np.apply_along_axis(np.convolve,-1,loss,np.ones(smoothening),'same')
+
 #%% 
-pid = 0
-cmap_name = 'ocean'
+pid = 3
+cmap_name = 'copper'
 cols = getattr(cm, cmap_name)(np.linspace(0,1,len(fracs)))
 mpl.rcParams['axes.prop_cycle'] = cycler(color=cols)
 plt.plot(loss_smooth[pid,:,:].T)
@@ -94,69 +113,80 @@ plt.ylabel('NLL loss')
 plt.title('Training with P='+str(Ps[pid]))
 
 #%%
-pid = 0
+pid = -1
+t = -1
+#plt.figure()
+#plt.plot(test_L, accuracy[pid,:,:].T)
+#plt.legend(fracs)
+#plt.plot(test_L, 1/np.array(test_L), 'k--')
+#plt.xlabel('test L')
+#plt.ylabel('test accuracy')
 plt.figure()
-plt.plot(test_L, accuracy[pid,:,:].T)
-plt.legend(fracs)
-plt.plot(test_L, 1/np.array(test_L), 'k--')
-plt.xlabel('test L')
-plt.ylabel('test accuracy')
+plt.imshow(accuracy[pid,:,:,t], 'binary')
+plt.yticks(np.arange(accuracy.shape[1]), fracs)
+plt.xticks(np.arange(accuracy.shape[2]))
+#plt.ylim([-len(fracs)-0.5,0.5])
+#plt.gca().set_yticklabels(fracs)
+plt.gca().autoscale(enable=True)
+
+plt.gca().get_images()[0].set_clim([0,1])
+plt.colorbar()
+plt.title('performance P=%d, trained on L=%s'%(Ps[pid], trained_Ls[pid]))
+plt.xlabel('Sequence length (L)')
+plt.ylabel('Number of neurons (N)')
 
 #%% Linear decoding of memory activation
-L = [3]
+pind = Ps.index(10)
+L = [7]
 whichrnn = -1
-P = Ps[pid]
+P = Ps[pind]
+_dt = 30
 
 isgru = rnn_type in ['GRU', 'tanh-GRU']
 if isgru:
-    rnn = RNNModel('tanh-GRU', P+1*explicit, P+1*explicit, fracs[whichrnn], 1, embed=embed)
-    rnn.load(CODE_DIR+'results/'+folds+'parameters_%d_%d_GRU.pt'%(fracs[whichrnn], P))
+    suff =suffix_maker(fracs[whichrnn], P, 'GRU', Q, wa)
+    rnn = RNNModel('tanh-GRU', ninp, ninp, fracs[whichrnn], 1, embed=embed,
+                   persistent=persistent)
+    rnn.load(CODE_DIR+FOLDERS+'parameters'+suff+'.pt')
 else:
-    rnn = rnns[whichrnn]
+    rnn = rnns[pind][whichrnn]
 
 nseq = 1500
-#clsfr = calibration.CalibratedClassifierCV(svm.LinearSVC(tol=1e-5, max_iter=5000), cv=10)
-#clsfr = svm.LinearSVC
-#cfargs = {'tol': 1e-5, 'max_iter':5000}
-#clsfr = linear_model.LogisticRegression(tol=1e-5, solver='lbfgs', max_iter=1000)
-clsfr = discriminant_analysis.LinearDiscriminantAnalysis
-cfargs = {}
+clsfr = svm.LinearSVC
+cfargs = {'tol': 1e-5, 'max_iter':5000}
+#clsfr = discriminant_analysis.LinearDiscriminantAnalysis
+#cfargs = {}
 
 # generate training data
-acc, H, I = test_net(rnn, L, nseq, list(range(P)), 
+acc, H, I = test_net(rnn, list(range(P)), L, nseq, dead_time=_dt,
+                     be_picky=True, signal_tokens=signal_tokens,
                      explicit=explicit, return_hidden=True)
 lseq = H.shape[0]
 
-#H = H.transpose(1,0,2,3).reshape((H.shape[1],-1))
 H = H.squeeze() # lenseq x nneur x nseq
 I = I.squeeze() # lenseq x nseq
 H_flat = H.transpose(1,0,2).reshape((H.shape[1],-1))
 
-ans = np.zeros(I.shape + (P+1,)) # lenseq x nseq x ntoken
-for p in range(P+1):
-    ans[:,:,p] =np.apply_along_axis(is_memory_active, 0, I, p)
+#t_ = (np.cumsum(np.ones((lseq, nseq)), axis=0)-1).astype(int)
+t_ = np.cumsum(I!=rnn.padding, axis=0)-1
 
-# do the decoding
-clf = [[clsfr(**cfargs) for _ in range(lseq)] for _ in range(P+1)]
+clf = LinearDecoder(rnn, P, clsfr)
+clf.fit(H, I, explicit, t_, **cfargs)
 
-for t in range(lseq):
-    for p in range(P):
-        clf[p][t].fit(H[t,...].T, ans[t,:,p])
-    if explicit:
-        clf[-1][t].fit(H_flat.T, ans[:,:,-1].flatten())
-    else:
-        tim = np.tile(np.arange(lseq)[:,np.newaxis],(1,H.shape[2]))
-        clf[-1][t].fit(H_flat.T, tim.flatten()>=L[0])
+coefs = clf.coefs
+thrs = clf.thrs
 
 # generate test data
 if isgru:
-    acc, H, I, Z, R = test_net(rnn, L, nseq, list(range(P)), 
+    acc, H, I, Z, R = test_net(rnn, list(range(P)), L, nseq, dead_time=_dt, 
+                               be_picky=True, signal_tokens=signal_tokens,
                                explicit=explicit,
                                return_hidden=True, give_gates=True)
     Z = Z.squeeze() # lenseq x nneur x nseq
     R = R.squeeze() # lenseq x nneur x nseq
 else: 
-    acc, H, I = test_net(rnn, L, nseq, AB=list(range(P)), 
+    acc, H, I = test_net(rnn, list(range(P)), L, nseq, dead_time=_dt,
+                         be_picky=True, signal_tokens=signal_tokens,
                          explicit=explicit, return_hidden=True)
 
 H = H.squeeze() # lenseq x nneur x nseq
@@ -166,57 +196,45 @@ ans = np.zeros(I.shape + (P+1,)) # lenseq x nseq x ntoken
 for p in range(P+1):
     ans[:,:,p] =np.apply_along_axis(is_memory_active, 0, I, p)
 
+t_proj = np.cumsum(I!=rnn.padding, axis=0)-1
+#t_proj = np.ones(t_.shape, dtype=int)*7
+#t_proj = (np.cumsum(I!=rnn.padding, axis=0)-1)
+#t_proj[t_proj<=L[0]] = 1
+#t_proj[t_proj>=L[0]] = 7
+
 # test performance
-perf = np.array([[clf[p][t].score(H[t,:,:].T, ans[t,:,p]) for t in range(lseq)] for p in range(P)])
-
-plt.imshow(perf)
-plt.colorbar()
-
-plt.title('decoder accuracy (test sequences, per-time decoders)')
-plt.xlabel('time')
-plt.ylabel('token')
-
-#%% code for SVM
-mpl.rcParams['axes.prop_cycle'] = cycler(color='rgbcymk')
-which_seq = 2
-
-these_seqs = np.isin(list(range(P+1)), I[:,which_seq])   
-plt.plot(token_probs[:,which_seq,these_seqs])
-plt.xticks(ticks=range(lseq),labels=I[:,which_seq])
-plt.plot([L,L],plt.ylim(), 'k-')
-
-plt.legend(np.arange(P+1)[these_seqs])
-plt.title('Memory activations in example sequence')
-plt.xlabel('Token presented at time t')
-plt.ylabel('Probability of being present')
+perf = clf.test(H, I, t_proj)
 
 plt.figure()
-plt.imshow(H[:,:,which_seq].T)
-#plt.plot(H[:,:,which_seq])
-plt.xticks(ticks=range(lseq),labels=I[:,which_seq])
-plt.plot([L,L],plt.ylim(), 'k-')
-plt.title('Neural activations in example sequence')
-plt.xlabel('Token presented at time t')
-plt.ylabel('Neuron')
+plt.imshow(perf)
+
+plt.title('decoder accuracies (Network performance: %.3f)'%acc[0])
+plt.xlabel('time')
+plt.ylabel('token')
+#plt.gca().get_images()[0].set_clim([0,1])
+plt.colorbar()
+
+proj_ctr = clf.project(H, t_proj)
+inner = np.einsum('ik...,jk...->ij...', coefs, coefs)
 
 #%% Code for LDA
 # get the projections onto LDs, and angle between different LDs
-coefs = np.zeros((P+1, H.shape[1], lseq))
-thrs = np.zeros((P+1,lseq))
-for p in range(P+1):
-    for t in range(lseq):
-        coefs[p,:,t] = clf[p][t].coef_/la.norm(clf[p][t].coef_)
-        thrs[p,t] = -clf[p][t].intercept_/la.norm(clf[p][t].coef_)
+#coefs = np.zeros((P+1, H.shape[1], len(t_lbs)))
+#thrs = np.zeros((P+1,len(t_lbs)))
+#for p in range(P+1):
+#    for t in t_lbs:
+#        coefs[p,:,t] = clf[p][t].coef_/la.norm(clf[p][t].coef_)
+#        thrs[p,t] = -clf[p][t].intercept_/la.norm(clf[p][t].coef_)
 
-inner = np.einsum('ik...,jk...->ij...', coefs, coefs) # dot product between LDs
-proj = np.einsum('ikj...,jk...->ij...', coefs, H) # projection onto LDs
-
-# center the projections around the decision boundary
-proj_ctr = proj - thrs[:,:,np.newaxis]
+#inner = np.einsum('ik...,jk...->ij...', coefs, coefs) # dot product between LDs
+#proj = np.einsum('ikj...,jk...->ij...', coefs, H) # projection onto LDs
+#
+## center the projections around the decision boundary
+#proj_ctr = proj - thrs[:,:,np.newaxis]
 
 #%% see how well the LDs separate token activations
-plot_these = list(range(lseq))
-#plot_these = [1, L[0], -1]
+#plot_these = list(range(lseq))
+plot_these = list(range(1,lseq,10))
 #p_fixed = 1
 
 fig, axs = plt.subplots(P, len(plot_these))
@@ -244,8 +262,30 @@ for p in range(P):
         if p==P-1:
             axs[p][t].set_xlabel('LD1')
 
+plt.figure()
+foo = proj_ctr[-1,:,:].flatten()
+plt.hist(foo[t_.flatten()<=L], alpha=0.5)
+plt.hist(foo[t_.flatten()>=L[0]], alpha=0.5)
+plt.legend(['remember','forget'])
+plt.xlabel('projection onto first/second half classifier')
+
+#%%
+#foo = la.norm(coefs - coefs[:,:,:1], axis=1)
+foo = la.norm(np.diff(coefs, axis=-1), axis=1)
+plt.plot(clf.time_bins[1:],foo.T)
+plt.legend(list(range(P+1)))
+plt.ylabel('Distance from previous timestep')
+plt.xlabel('time bin')
+
+plt.figure() 
+plt.plot(clf.time_bins, thrs.T)
+plt.legend(list(range(P+1)))
+plt.ylabel('Classifier decision boundary')
+plt.xlabel('time')
+
 #%% see how different LDs relate to each other
-plot_these = list(range(lseq))
+#plot_these = list(range(lseq))
+plot_these = clf.time_bins
 #plot_these = [1, L[0], -1]
 
 fig, axs = plt.subplots(1, len(plot_these))
@@ -273,56 +313,75 @@ axs[0].set_ylabel('Neuron')
 
 #%% how do the projections evolve for example sequences?
 mpl.rcParams['axes.prop_cycle'] = cycler(color='rgbcymk')
-which_seq = 40
+cmap_name = 'jet'
+which_seq = 3
 
-these_toks = np.isin(list(range(P+1)), I[:,which_seq]) 
+these_toks = np.isin(list(range(P+1)), I[:,which_seq])
+labs = I[:,which_seq].astype(int)
+labpos = labs.argsort()[-np.sum(labs!=rnn.padding):]
+#half = (labs==P).argmax()
 
+cols = getattr(cm, cmap_name)(np.linspace(0,1,sum(these_toks)))
+
+plt.axes()
+plt.gca().set_prop_cycle(cycler(color=cols))
 plt.plot(proj_ctr[these_toks,:,which_seq].T)
-plt.xticks(ticks=range(lseq),labels=I[:,which_seq])
-plt.plot([L,L],plt.ylim(), 'k-')
-plt.plot(plt.xlim(),[0,0], 'k--')
+plt.xticks(ticks=labpos,labels=labs[labpos])
 plt.legend(np.arange(P+1)[these_toks])
+plt.plot(plt.xlim(),[0,0], 'k--')
+#plt.plot([half,half],plt.ylim(), 'k-')
+
+c = cols[np.unique(labs[labpos], return_inverse=True)[1], :]
+plt.gca().set_prop_cycle(cycler(color=c))
+plt.plot(np.repeat(labpos[:,None],2,axis=1).T, plt.ylim(), '--')
+
 plt.title('Projections onto best LD of each token & time')
 plt.ylabel('Projection (centred at decision boundary)')
-#plt.ylabel('Projection')
 plt.xlabel('Token at time t')
 
 if isgru:
     fig = plt.figure()
-    ax1 = fig.add_subplot(121)
-    ax2 = fig.add_subplot(122)
+    ax1 = fig.add_subplot(211)
+    ax2 = fig.add_subplot(212)
     
     ax1.imshow(Z[:,:,which_seq].T, cmap='binary')
     ax1.get_images()[0].set_clim([0,1])
+    ax1.set_xticks(labpos)
+    ax1.set_xticklabels(labs[labpos])
+    ax1.plot(np.repeat(labpos[:,None],2,axis=1).T, ax1.get_ylim(), 'k--', alpha=0.5)
     ax1.set_title('Update gate activities')
     
     ax2.imshow(R[:,:,which_seq].T, cmap='binary')
     ax2.get_images()[0].set_clim([0,1])
+    ax2.set_xticks(labpos)
+    ax2.set_xticklabels(labs[labpos])
+    ax2.plot(np.repeat(labpos[:,None],2,axis=1).T, ax2.get_ylim(), 'k--', alpha=0.5)
     ax2.set_title('Reset gate activities')
     plt.colorbar(ax2.get_images()[0])
 
-#%%
-#foo = la.norm(coefs - coefs[:,:,:1], axis=1)
-foo = la.norm(np.diff(coefs, axis=-1), axis=1)
-plt.plot(list(range(1,lseq)),foo.T)
-plt.legend(list(range(P+1)))
-plt.ylabel('Distance from previous timestep')
-plt.xlabel('time')
-
 plt.figure()
-plt.plot(range(lseq), thrs.T)
-plt.legend(list(range(P+1)))
-plt.ylabel('Classifier decision boundary')
-plt.xlabel('time')
-
-plt.figure()
-zproj = np.einsum('ikj...,jk...->ij...', coefs, Z) # projection onto LDs
-
+plt.imshow(H[:,:,which_seq].T)
+#plt.plot(H[:,:,which_seq])
+plt.xticks(ticks=labpos,labels=labs[labpos])
+plt.plot(np.repeat(labpos[:,None],2,axis=1).T, plt.ylim(), 'k--', alpha=0.5)
+plt.title('Neural activations in example sequence')
+plt.xlabel('Token presented at time t')
+plt.ylabel('Neuron')
 
 #%% Decode time in trial
+pind = Ps.index(10)
 L = [7]
-rnn = rnns[-3]
-P = Ps[pid]
+whichrnn = -2
+P = Ps[pind]
+
+isgru = rnn_type in ['GRU', 'tanh-GRU']
+if isgru:
+    suffix_maker(fracs[whichrnn], P, 'GRU', Q)
+    rnn = RNNModel('tanh-GRU', ninp, ninp, fracs[whichrnn], 1, embed=embed,
+                   persistent=persistent)
+    rnn.load(CODE_DIR+FOLDERS+'parameters'+suffix_maker(fracs[whichrnn], P, 'GRU', Q)+'.pt')
+else:
+    rnn = rnns[pind][whichrnn]
 
 nseq = 1500
 #clsfr = calibration.CalibratedClassifierCV(svm.LinearSVC(tol=1e-5, max_iter=5000), cv=10)
@@ -332,7 +391,8 @@ clsfr = svm.LinearSVC
 cfargs = {'tol': 1e-5, 'max_iter':5000}
 
 # generate training data
-acc, H, I = test_net(rnn, L, nseq, list(range(P)), 
+acc, H, I = test_net(rnn, list(range(P)), L, nseq, dead_time=dead_time,
+                     be_picky=True, signal_tokens=signal_tokens,
                      explicit=explicit, return_hidden=True)
 lseq = H.shape[0]
 
@@ -349,8 +409,18 @@ clf = clsfr(**cfargs)
 clf.fit(H_flat.T, ans_flat)
 
 # test
-acc, H, I = test_net(rnn, L, nseq, list(range(P)), 
-                     explicit=explicit, return_hidden=True)
+if isgru:
+    acc, H, I, Z, R = test_net(rnn, list(range(P)), L, nseq, dead_time=dead_time, 
+                               be_picky=True, signal_tokens=signal_tokens,
+                               explicit=explicit,
+                               return_hidden=True, give_gates=True)
+    Z = Z.squeeze() # lenseq x nneur x nseq
+    R = R.squeeze() # lenseq x nneur x nseq
+else: 
+    acc, H, I = test_net(rnn, list(range(P)), L, nseq, dead_time=dead_time,
+                         be_picky=True, signal_tokens=signal_tokens,
+                         explicit=explicit, return_hidden=True)
+
 H = H.squeeze() # lenseq x nneur x nseq
 I = I.squeeze() # lenseq x nseq
 H_flat = H.transpose(1,0,2).reshape((H.shape[1],-1))
@@ -408,8 +478,13 @@ for t in range(lseq):
 ## </whinging>
 
 #%% Looking at projections of the activity
-#X = H.transpose(1,0,2).reshape((H.shape[1],-1)) # hidden
-X = Z.transpose(1,0,2).reshape((Z.shape[1],-1)) # update gate
+@numba.njit()
+def test_dist(a,b):
+    return np.abs(np.sum(a*b))
+    
+#%%
+X = H.transpose(1,0,2).reshape((H.shape[1],-1)) # hidden
+#X = Z.transpose(1,0,2).reshape((Z.shape[1],-1)) # update gate
 #X = R.transpose(1,0,2).reshape((R.shape[1],-1)) # reset gate
 
 tim = np.tile(np.arange(lseq)[:,np.newaxis],(1,H.shape[2]))
@@ -417,21 +492,31 @@ tim = tim.flatten()
 trial = np.tile(np.arange(nseq)[:,np.newaxis],(1,H.shape[0]))
 trial = trial.T.flatten() 
 token = I.flatten()
-firsthalf = tim <= L[0]
+firsthalf = ans[:,:,-1].flatten()
+whichmemory = ans[:,:,0].flatten() + 2*ans[:,:,1].flatten()
 
 # do UMAP
 reducer = umap.UMAP(n_components=2)
-emb = reducer.fit_transform(X.T)
+emb = reducer.fit_transform(X[:,token!=-1].T)
 
 # do PCA
-_, S, V = la.svd(X.T-X.mean(1), full_matrices=False)
+_, S, V = la.svd(X[:,token!=-1].T-X[:,token!=-1].mean(1), full_matrices=False)
 pcs = X.T@V[:3,:].T
+
+# do MDS
+#print('Fitting MDS')
+#mds1 = manifold.MDS(n_components=3, eps=1e-4)
+#mdsemb_first = mds1.fit_transform(X[:,firsthalf].T)
+#
+#mds2 = manifold.MDS(n_components=3, eps=1e-4)
+#mdsemb_second = mds2.fit_transform(X[:,~firsthalf].T)
 
 #%% PCA
 cmap_name = 'nipy_spectral'
-colorby = token
-#colorby = tim
+#colorby = token
+colorby = tim
 #colorby = firsthalf
+#colorby = whichmemory
 
 # plot
 fig = plt.figure()
@@ -455,11 +540,14 @@ cb.draw_all()
 
 #%% UMAP
 cmap_name = 'nipy_spectral'
-#colorby = token
+colorby = token[token!=-1]
 #colorby = tim
-colorby = firsthalf
+#colorby = t_proj.flatten()
+#colorby = firsthalf[token!=-1]
+#colorby = whichmemory[token!=-1]
 
 # plot
+plt.figure()
 scat = plt.scatter(emb[:,0],emb[:,1], c=colorby, alpha=0.1, cmap=cmap_name)
 
 cb = plt.colorbar(scat, 
