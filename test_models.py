@@ -22,18 +22,19 @@ from needful_functions import *
 #%% Load from Habanero experiment
 #fracs = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0,1.5,2.0,3.0]
 fracs = [1,2,3,4,5,6,7,8,9,10,15,20,30]
-Ps = [3,4,5,6,7,8,9,10]
-dts = [None, 10, 15, 20, 30, 40, 50, 100]
-#dts = [None]
+Ps = [10,15,20,25,30]
+#dts = [None, 10, 15, 20, 30, 40, 50, 100]
+dts = [None]
+FORGET = False
 Q = None
-rnn_type = 'GRU'
-explicit = True
-persistent = False
-smoothening = 12
+rnn_type = 'tanh'
+explicit = True and FORGET
+persistent = True and FORGET
 embed = False
 dead_time = None
+smoothening = 1 # of the loss function
 
-FOLDERS = expfolders(explicit, persistent, embed)
+FOLDERS = expfolders(explicit, persistent, embed, FORGET)
 
 #if Q is not None:
 #    signal_tokens=list(range(Q))
@@ -50,12 +51,14 @@ for i,P in enumerate(Ps):
     
     for j,N in enumerate(fracs):
         
-        wa = int(P*dead_time) if dead_time is not None else None
-        expinf = suffix_maker(N, P, rnn_type, Q, )
+#        wa = int(P*dead_time) if dead_time is not None else None
+        wa = dead_time
+        expinf = suffix_maker(N, P, rnn_type, Q, wa)
         params_fname = 'parameters'+expinf+'.pt'
         loss_fname = 'loss'+expinf+'.npy'
         args_fname = 'arguments'+expinf+'.npy'
         accy_fname = 'accuracy'+expinf+'.npy'
+        dset_fname = 'datasets'+expinf+'.pkl'
         
         if not os.path.exists(CODE_DIR+FOLDERS+loss_fname):
             print(CODE_DIR+FOLDERS+loss_fname+' doesn`t exist!')
@@ -77,7 +80,7 @@ for i,P in enumerate(Ps):
     #            these_L = test_L
                 if len(these_L) != 0:
                     acc1 = test_net(rnn, list(range(P)), these_L, 500, dead_time=_dt, 
-                                    be_picky=True, signal_tokens=signal_tokens,
+                                    be_picky=None, signal_tokens=signal_tokens,
                                     explicit=explicit)[0]
                     accuracy[i,j,these_L, k] = acc1
                     
@@ -86,7 +89,7 @@ for i,P in enumerate(Ps):
                 
             else:
                 acc1 = test_net(rnn, list(range(P)), test_L, 500, dead_time=_dt,
-                                be_picky=True, signal_tokens=signal_tokens,
+                                be_picky=None, signal_tokens=signal_tokens,
                                 explicit=explicit)[0]
                 accuracy[i,j,test_L, k] = acc1
         
@@ -102,7 +105,7 @@ for i,P in enumerate(Ps):
 loss_smooth = np.apply_along_axis(np.convolve,-1,loss,np.ones(smoothening),'same')
 
 #%% 
-pid = 3
+pid = -1
 cmap_name = 'copper'
 cols = getattr(cm, cmap_name)(np.linspace(0,1,len(fracs)))
 mpl.rcParams['axes.prop_cycle'] = cycler(color=cols)
@@ -113,8 +116,8 @@ plt.ylabel('NLL loss')
 plt.title('Training with P='+str(Ps[pid]))
 
 #%%
-pid = -1
-t = -1
+pid = -4
+t = 0
 #plt.figure()
 #plt.plot(test_L, accuracy[pid,:,:].T)
 #plt.legend(fracs)
@@ -137,14 +140,22 @@ plt.ylabel('Number of neurons (N)')
 
 #%% Linear decoding of memory activation
 pind = Ps.index(10)
-L = [7]
+L = [4]
 whichrnn = -1
 P = Ps[pind]
-_dt = 30
+_dt = None
+decode_token = False
+decode_from = 'hidden'
+#decode_from = 'reset'
+#decode_from = 'update'
+#decode_time = 'input'
+#decode_time = 'inter'
+decode_time = 'all'
 
 isgru = rnn_type in ['GRU', 'tanh-GRU']
 if isgru:
     suff =suffix_maker(fracs[whichrnn], P, 'GRU', Q, wa)
+    ninp = P+1*(explicit or persistent)
     rnn = RNNModel('tanh-GRU', ninp, ninp, fracs[whichrnn], 1, embed=embed,
                    persistent=persistent)
     rnn.load(CODE_DIR+FOLDERS+'parameters'+suff+'.pt')
@@ -157,64 +168,149 @@ cfargs = {'tol': 1e-5, 'max_iter':5000}
 #clsfr = discriminant_analysis.LinearDiscriminantAnalysis
 #cfargs = {}
 
-# generate training data
-acc, H, I = test_net(rnn, list(range(P)), L, nseq, dead_time=_dt,
-                     be_picky=True, signal_tokens=signal_tokens,
-                     explicit=explicit, return_hidden=True)
-lseq = H.shape[0]
-
-H = H.squeeze() # lenseq x nneur x nseq
-I = I.squeeze() # lenseq x nseq
-H_flat = H.transpose(1,0,2).reshape((H.shape[1],-1))
-
-#t_ = (np.cumsum(np.ones((lseq, nseq)), axis=0)-1).astype(int)
-t_ = np.cumsum(I!=rnn.padding, axis=0)-1
-
-clf = LinearDecoder(rnn, P, clsfr)
-clf.fit(H, I, explicit, t_, **cfargs)
-
-coefs = clf.coefs
-thrs = clf.thrs
-
-# generate test data
+##### generate training data ##################################################
 if isgru:
     acc, H, I, Z, R = test_net(rnn, list(range(P)), L, nseq, dead_time=_dt, 
-                               be_picky=True, signal_tokens=signal_tokens,
+                               be_picky=None, signal_tokens=signal_tokens,
                                explicit=explicit,
                                return_hidden=True, give_gates=True)
     Z = Z.squeeze() # lenseq x nneur x nseq
     R = R.squeeze() # lenseq x nneur x nseq
 else: 
     acc, H, I = test_net(rnn, list(range(P)), L, nseq, dead_time=_dt,
-                         be_picky=True, signal_tokens=signal_tokens,
+                         be_picky=None, signal_tokens=signal_tokens,
                          explicit=explicit, return_hidden=True)
-
+lseq = H.shape[0]
 H = H.squeeze() # lenseq x nneur x nseq
 I = I.squeeze() # lenseq x nseq
 
-ans = np.zeros(I.shape + (P+1,)) # lenseq x nseq x ntoken
+if decode_time == 'input':
+    these_t = (I!=rnn.padding)
+elif decode_time == 'inter':
+    these_t = (I==rnn.padding)
+elif decode_time == 'all':
+    these_t = (I<=1e10)
+
+mem_act = np.zeros(I.shape + (P+1,)) # lenseq x nseq x ntoken
+tok_pres = np.zeros(I.shape + (P+1,)) # lenseq x nseq x ntoken
+
+idx = np.nonzero((I.T!=-1)*(I.T!=P))[1].reshape((nseq,-1))
+nrep = np.diff(idx, axis=1, append=lseq)
+tok = np.take_along_axis(I,np.repeat(idx.flatten(),nrep.flatten()).reshape((nseq,-1)).T,0)
 for p in range(P+1):
-    ans[:,:,p] =np.apply_along_axis(is_memory_active, 0, I, p)
+    mem_act[:,:,p] =np.apply_along_axis(is_memory_active, 0, I, p)
+    tok_pres[:,:,p] = (tok==p)
+    
+#t_ = (np.cumsum(np.ones((lseq, nseq)), axis=0)-1).astype(int)
+t_ = np.cumsum(I!=rnn.padding, axis=0)-1
+#t_[t_<L[0]] = 0
+#t_[t_>=L[0]] = 1
+#t_ = np.zeros((lseq, nseq), dtype=int)
+
+# make it nice
+idx = np.nonzero(these_t.T)[1].reshape((nseq,-1)).T
+if decode_from == 'hidden':
+    X = np.take_along_axis(H, idx[:,None,:], 0)
+elif decode_from == 'reset':
+    X = np.take_along_axis(R, idx[:,None,:], 0)
+elif decode_from == 'update':
+    X = np.take_along_axis(Z, idx[:,None,:], 0)
+t_ = np.take_along_axis(t_, idx, 0)
+
+if decode_token:
+    ans = np.take_along_axis(tok_pres, idx[:,:,None], 0)
+else:
+    ans = np.take_along_axis(mem_act, idx[:,:,None], 0)
+ans[:,:,-1] = t_ >= L[0]
+
+##### fit models ##############################################################
+clf = LinearDecoder(rnn, P, clsfr)
+clf.fit(X, ans, t_, **cfargs)
+
+coefs = clf.coefs
+thrs = clf.thrs
+
+##### generate test data ######################################################
+if isgru:
+    acc, H, I, Z, R = test_net(rnn, list(range(P)), L, nseq, dead_time=_dt, 
+                               be_picky=None, signal_tokens=signal_tokens,
+                               explicit=explicit,
+                               return_hidden=True, give_gates=True)
+    Z = Z.squeeze() # lenseq x nneur x nseq
+    R = R.squeeze() # lenseq x nneur x nseq
+else: 
+    acc, H, I = test_net(rnn, list(range(P)), L, nseq, dead_time=_dt,
+                         be_picky=None, signal_tokens=signal_tokens,
+                         explicit=explicit, return_hidden=True)
+H = H.squeeze() # lenseq x nneur x nseq
+I = I.squeeze() # lenseq x nseq
+
+if decode_time == 'input':
+    these_t = (I!=rnn.padding)
+elif decode_time == 'inter':
+    these_t = (I==rnn.padding)
+elif decode_time == 'all':
+    these_t = (I<=1e10)
+
+mem_act = np.zeros(I.shape + (P+1,)) # lenseq x nseq x ntoken
+tok_pres = np.zeros(I.shape + (P+1,)) # lenseq x nseq x ntoken
+
+idx = np.nonzero((I.T!=-1)*(I.T!=P))[1].reshape((nseq,-1))
+nrep = np.diff(idx, axis=1, append=lseq)
+tok = np.take_along_axis(I,np.repeat(idx.flatten(),nrep.flatten()).reshape((nseq,-1)).T,0)
+for p in range(P+1):
+    mem_act[:,:,p] =np.apply_along_axis(is_memory_active, 0, I, p)
+    tok_pres[:,:,p] = (tok==p)
 
 t_proj = np.cumsum(I!=rnn.padding, axis=0)-1
-#t_proj = np.ones(t_.shape, dtype=int)*7
+#t_proj = np.ones(t_.shape, dtype=int)*1
 #t_proj = (np.cumsum(I!=rnn.padding, axis=0)-1)
-#t_proj[t_proj<=L[0]] = 1
-#t_proj[t_proj>=L[0]] = 7
+#t_proj[t_proj<L[0]] = 0
+#t_proj[t_proj>=L[0]] = 1
 
-# test performance
-perf = clf.test(H, I, t_proj)
+idx = np.nonzero(these_t.T)[1].reshape((nseq,-1)).T
+if decode_from == 'hidden':
+    X = np.take_along_axis(H, idx[:,None,:], 0)
+elif decode_from == 'reset':
+    X = np.take_along_axis(R, idx[:,None,:], 0)
+elif decode_from == 'update':
+    X = np.take_along_axis(Z, idx[:,None,:], 0)
+t_proj = np.take_along_axis(t_proj, idx, 0)
+
+if decode_token:
+    ans = np.take_along_axis(tok_pres, idx[:,:,None], 0)
+else:
+    ans = np.take_along_axis(mem_act, idx[:,:,None], 0)
+ans[:,:,-1] = t_proj >= L[0]
+
+### test peformance #########################################################
+perf = clf.test(X, ans, t_proj)[:-1,:]
+marg = clf.margin(X, ans, t_proj)
+
+#pp = ans[:,:,:-1].mean() # i'm setting 'chance' level as the best you could do
+#pmin = np.max([pp, 1-pp])  # with a constant classifier (using empirical )
+pmin = 1-(1/L[0])
 
 plt.figure()
 plt.imshow(perf)
 
 plt.title('decoder accuracies (Network performance: %.3f)'%acc[0])
-plt.xlabel('time')
+plt.xlabel('time bin')
 plt.ylabel('token')
-#plt.gca().get_images()[0].set_clim([0,1])
+plt.gca().get_images()[0].set_clim([pmin,1])
 plt.colorbar()
 
-proj_ctr = clf.project(H, t_proj)
+plt.figure()
+plt.imshow(marg,'coolwarm')
+
+plt.title('decoder margins (Network performance: %.3f)'%acc[0])
+plt.xlabel('time bin')
+plt.ylabel('token')
+pp = np.max(np.abs([marg.min(), marg.max()]))
+plt.gca().get_images()[0].set_clim([-pp,pp])
+plt.colorbar()
+
+proj_ctr = clf.project(X, t_proj)
 inner = np.einsum('ik...,jk...->ij...', coefs, coefs)
 
 #%% Code for LDA
@@ -234,7 +330,8 @@ inner = np.einsum('ik...,jk...->ij...', coefs, coefs)
 
 #%% see how well the LDs separate token activations
 #plot_these = list(range(lseq))
-plot_these = list(range(1,lseq,10))
+#plot_these = list(range(1,lseq,10))
+plot_these = clf.time_bins
 #p_fixed = 1
 
 fig, axs = plt.subplots(P, len(plot_these))
@@ -243,19 +340,16 @@ for p in range(P):
     for t,tt in enumerate(plot_these):
         if p==0:
             axs[p,t].set_title('Time %d'%tt)
-            
-#        C = clf[p][-2].coef_/la.norm(clf[p][-2].coef_)
-#        ison = C.dot(H[tt,...])[:,ans[tt,:,p]==1].squeeze()
-#        isoff = C.dot(H[tt,...])[:,ans[tt,:,p]==0].squeeze()
-        ison = proj_ctr[p,tt,ans[tt,:,p]==1]
-        isoff = proj_ctr[p,tt,ans[tt,:,p]==0]
-        foo = 0
+        
+        x = proj_ctr[p, t_proj==tt]
+        y = ans.transpose((2,0,1))
+        ison = x[y[p,t_proj==tt]==1]
+        isoff = x[y[p,t_proj==tt]==0]
 #        pval = sts.ks_2samp(ison,isoff).pvalue
-#        foo = -clf[p][1].intercept_/la.norm(clf[p][1].coef_)
         
         axs[p,t].hist(ison, density=True, alpha=0.5)
         axs[p,t].hist(isoff, density=True, alpha=0.5)
-        axs[p,t].plot([foo,foo],axs[p,t].get_ylim(), 'k-')
+        axs[p,t].plot([0,0],axs[p,t].get_ylim(), 'k-')
 #        axs[p,t].text(axs[p,t].get_xlim()[0],axs[p,t].get_ylim()[1],
 #                 'p={:.1e} (K-S)'.format(pval), fontsize=10, va='top')
         
@@ -263,9 +357,8 @@ for p in range(P):
             axs[p][t].set_xlabel('LD1')
 
 plt.figure()
-foo = proj_ctr[-1,:,:].flatten()
-plt.hist(foo[t_.flatten()<=L], alpha=0.5)
-plt.hist(foo[t_.flatten()>=L[0]], alpha=0.5)
+plt.hist(proj_ctr[-1,t_proj<L[0]], alpha=0.5)
+plt.hist(proj_ctr[-1,t_proj>=L[0]], alpha=0.5)
 plt.legend(['remember','forget'])
 plt.xlabel('projection onto first/second half classifier')
 
@@ -492,16 +585,21 @@ tim = tim.flatten()
 trial = np.tile(np.arange(nseq)[:,np.newaxis],(1,H.shape[0]))
 trial = trial.T.flatten() 
 token = I.flatten()
-firsthalf = ans[:,:,-1].flatten()
+firsthalf = t_proj.flatten() >= L[0]
 whichmemory = ans[:,:,0].flatten() + 2*ans[:,:,1].flatten()
 
 # do UMAP
-reducer = umap.UMAP(n_components=2)
-emb = reducer.fit_transform(X[:,token!=-1].T)
+#reducer = umap.UMAP(n_components=2, n_neighbors=20, min_dist=0.8)
+#emb = reducer.fit_transform(X.T)
 
 # do PCA
-_, S, V = la.svd(X[:,token!=-1].T-X[:,token!=-1].mean(1), full_matrices=False)
+_, S, V = la.svd(X[:,:].T-X[:,:].mean(1), full_matrices=False)
 pcs = X.T@V[:3,:].T
+
+plt.figure()
+plt.loglog((S**2)/np.sum(S**2))
+plt.xlabel('PC')
+plt.ylabel('variance explained')
 
 # do MDS
 #print('Fitting MDS')
@@ -512,17 +610,20 @@ pcs = X.T@V[:3,:].T
 #mdsemb_second = mds2.fit_transform(X[:,~firsthalf].T)
 
 #%% PCA
-cmap_name = 'nipy_spectral'
-#colorby = token
-colorby = tim
-#colorby = firsthalf
-#colorby = whichmemory
+#plotthese = whichmemory > 0
+plotthese = token!=-1
+#cmap_name = 'nipy_spectral'
+cmap_name = 'bwr'
+#colorby = token[plotthese]
+#colorby = tim
+colorby = firsthalf[plotthese]
+#colorby = whichmemory[plotthese]
 
 # plot
 fig = plt.figure()
 ax = fig.add_subplot(111, projection='3d')
 
-scat = ax.scatter(pcs[:,0],pcs[:,1],pcs[:,2], c=colorby, alpha=0.1, cmap=cmap_name)
+scat = ax.scatter(pcs[plotthese,0],pcs[plotthese,1],pcs[plotthese,2], c=colorby, alpha=0.1, cmap=cmap_name)
 ax.set_xlabel('pc1')
 ax.set_ylabel('pc2')
 ax.set_zlabel('pc3')
@@ -535,13 +636,12 @@ cb.set_ticklabels(np.unique(colorby))
 cb.set_alpha(1)
 cb.draw_all()
 
-#plt.figure()
-#plt.
+#plt.box(False)
 
 #%% UMAP
 cmap_name = 'nipy_spectral'
-colorby = token[token!=-1]
-#colorby = tim
+#colorby = token[token!=-1]
+colorby = tim
 #colorby = t_proj.flatten()
 #colorby = firsthalf[token!=-1]
 #colorby = whichmemory[token!=-1]

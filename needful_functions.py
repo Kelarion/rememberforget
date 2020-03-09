@@ -20,6 +20,8 @@ from itertools import compress, permutations
 #from joblib import Parallel, delayed
 #import multiprocessing
 import numpy as np
+import matplotlib.colors as clr
+from matplotlib import cm
 import scipy.special as spc
 from students import RNNModel, Indicator
 
@@ -374,6 +376,11 @@ def make_dset(Ls, AB, nseq, ntest, padding=-1, dead_time=None, **expargs):
     
     ntot = nseq+ntest
     if 'be_picky' in expargs.keys():
+        if expargs['be_picky'] is None:
+            try:
+                expargs['be_picky'] = math.factorial(len(AB))/math.factorial(len(AB)-max(Ls)) < 1e7
+            except OverflowError:
+                expargs['be_picky'] = False
         if expargs['be_picky']:
             # for some L,P combinations, there will be very few unique sequences
             # we need to ensure that the total # of unique seqs is still nseq+ntest
@@ -400,6 +407,7 @@ def make_dset(Ls, AB, nseq, ntest, padding=-1, dead_time=None, **expargs):
         Ntest = nseqs[i] - Nseq
 #        print((Nseq, Ntest))
         nums, ans = draw_seqs(l, nseqs[i], Om=AB, **expargs)
+        
 #        print('drawn')
 #        if nums.shape[0] < nseq+ntest:
 #            Nseq = int(nseq*nums.shape[0]/(nseq+ntest))
@@ -755,6 +763,13 @@ def is_memory_active(seq, mem):
     stp = np.cumsum((seq==mem).astype(int)) % 2
     return stp
 
+def smear_tokens(seq):
+    """takes a sequence of tokens among padding, extends the last token 
+    throughout the dead time. """
+    idx = np.nonzero(seq!=-1)[0]
+    stp = seq[np.repeat(idx,np.diff(idx,append=len(seq)))]
+    return stp
+
 def was_token_presented(seq, mem):
     """
     Returns step function for whether mem was the last token presented
@@ -791,5 +806,22 @@ def pintersection(P,L,X,n=None):
         return 1-spc.binom(P-X,L)/spc.binom(P,L)
     else:
         return spc.binom(P,n)*spc.binom(P-X,L-n)*spc.binom(P-n,X-n)/(spc.binom(P,L)*spc.binom(P,X))
+
+def soft_colormap(x, y, cmap_name = 'jet'):
+        '''
+        Make a colormap in which hue is a function of x, and saturation a 
+        function of y.
+        '''
+        # N = len(x)
+        
+        # vals = np.argmax(class_probs, axis = 1)
+        # foo = cm.ScalarMappable(cmap = cmap_name)
+        foo = getattr(cm, cmap_name)((x-np.min(x))/np.max(x-np.min(x)))
+        hsv = clr.rgb_to_hsv(foo[:,:3])
+    
+        hsv[:,2] = (y-np.min(y))/np.max(y-np.min(y))
+        cols = clr.hsv_to_rgb(hsv)
+        
+        return cols
 
 

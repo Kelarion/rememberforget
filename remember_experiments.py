@@ -15,13 +15,13 @@ import scipy.linalg as la
 import umap
 from cycler import cycler
 
-from students import RNNModel, LinearDecoder
+from students import RNNModel, LinearDecoder, Dichotomies
 
 from needful_functions import *
 
 #%% Load from Habanero experiment
 #N_list_overwrite = [10]
-N_list_overwrite = [5]
+N_list_overwrite = [3,5,7,10,15]
 Q_list_overwrite = None
 # Q_list_overwrite = [2,3,4,5]
 P = 30
@@ -41,7 +41,7 @@ N_list, Q_list, trained_Ls = exp_params
 rnns, metrics, accuracy = results
 
 #%% plot the loss
-nid = 0
+nid = 4
 # show_me = 'train_loss'
 show_me = 'test_loss'
 # show_me = 'train_orthog'
@@ -59,7 +59,7 @@ plt.ylabel(show_me)
 plt.title('Training with N='+str(N_list[nid]))
 
 #%% plot the accuracy
-nid = 0
+nid = 2
 
 acc_sig = np.array([np.nanmean(np.exp(-accuracy[i,nid,:,:q]),-1)\
                     for i,q in enumerate(Q_list)])
@@ -84,29 +84,48 @@ plt.xlabel('Test sequence length (L)')
 plt.ylabel('Number of signal tokens (Q)')
 
 #%%
-nid = 0
+nid = 2
+psid = 8
+cmap_name = 'spring'
+# show_me = 'train'
+show_me = 'test'
 
-PS_trn = np.nanmean(metrics['train_parallelism'][:,:,nid,:],axis=0)
-loss_trn = metrics['train_loss'][:,nid,:]
-PS_tst = np.nanmean(metrics['test_parallelism'][:,:,nid,:],axis=0)
-loss_tst = metrics['test_loss'][:,nid,:]
+# PS = np.nanmean(metrics[show_me+'_parallelism'][:,:,nid,:],axis=0)
+PS = metrics[show_me+'_parallelism'][:,psid,nid,:]
+loss = np.repeat(metrics[show_me+'_loss'][psid:psid+1,nid,:],10,axis=0)
+tmax = (np.isnan(PS)|np.isnan(loss)).argmax(1)
+PS = PS[:,:np.max(tmax)]
+loss = loss[:,:np.max(tmax)] 
 
-tok = (np.ones(PS_trn.shape).T*np.arange(PS_trn.shape[0])).flatten()
-tim = (np.ones(PS_trn.shape)*np.arange(PS_trn.shape[1])).flatten()
+final_PS = PS[np.arange(PS.shape[0]),tmax-1]
+final_loss = loss[np.arange(PS.shape[0]),tmax-1]
 
-plt.scatter(,PS_trn)
+nq = (np.ones(PS.shape).T*np.arange(PS.shape[0])).T.flatten()
+tim = np.cumsum(~np.isnan(PS),axis=1)
+tim = (tim/tim.max(1)[:,None]).flatten()
+
+# plt.scatter(loss.flatten(),PS.flatten(), c=nq, alpha=0.2, s=5) 
+sct = plt.scatter(final_loss, final_PS, marker='*', s=200, edgecolor='k')
+
+plt.legend(sct.legend_elements()[0],Q_list)
+plt.ylim([0,1.1])
+
+plt.xlabel(show_me+' loss')
+plt.ylabel('parallelism')
+plt.title('Network of %d units'%N_list[nid])
 
 #%%
 qind = 0
-nind = 0
+nind = 1
 #Ls = [4]
 decode_token = False
 decode_from = 'hidden'
 #decode_from = 'reset'
 #decode_from = 'update'
 #Q = Q_list[qind]
-these_Q = [3]
-these_L = [5]
+these_Q = Q_list
+# these_L = [15]
+these_L = list(range(2,30))
 
 isgru = rnn_type in ['GRU', 'tanh-GRU']
 
@@ -118,6 +137,7 @@ cfargs = {'tol': 1e-5, 'max_iter':5000}
 
 perf = np.zeros((len(these_Q), len(these_L)))
 marg = np.zeros((len(these_Q), len(these_L)))
+dimension = np.zeros(len(these_Q))
 for i,q in enumerate(these_Q):
     
     if isgru:
@@ -145,6 +165,10 @@ for i,q in enumerate(these_Q):
         
         coefs = clf.coefs
         thrs = clf.thrs
+        
+        # X_ = X.transpose(1,0,2).reshape((X.shape[1],-1))
+        # _, S, V = la.svd(X_[:,:].T-X_[:,:].mean(1), full_matrices=False)
+        # dimension[i] = (np.sum(S**2)**2)/np.sum(S**4)
         
         ##### generate test data ##############################################
         X, I, t_proj, ans, acc = draw_hidden_for_decoding(rnn, [l], nseq, 
@@ -189,7 +213,8 @@ plt.yticks(np.arange(perf.shape[0]), Q_list)
 plt.xticks(np.arange(P-2), np.arange(2,P))
 plt.xlabel('Test sequence length (L)')
 plt.ylabel('Number of signal tokens (Q)')
-pp = np.max(np.abs([marg.min(), marg.max()]))
+# pp = np.max(np.abs([marg.min(), marg.max()]))
+pp = marg.std()
 plt.gca().get_images()[0].set_clim([-pp,pp])
 plt.gca().autoscale(enable=True)
 plt.colorbar()
@@ -319,6 +344,8 @@ perf = np.zeros(578)
 marg = np.zeros(578)
 signal_loss = np.zeros(578)
 noise_loss = np.zeros(578)
+dimension = np.zeros(578)
+shat_dim = np.zeros((578,3))
 for epoch in range(578):
     rnn = RNNModel('tanh', P, P, N, 1, embed=False, persistent=False)
     rnn.load('/home/matteo/Documents/github/rememberforget/results/justremember' + 'params_epoch%d.pt'%epoch)
@@ -331,28 +358,38 @@ for epoch in range(578):
                                                 be_picky=None, 
                                                 forget=False, 
                                                 dead_time=None)
-            
+    
     ##### fit models ######################################################
     clf = LinearDecoder(rnn, P, clsfr)
     clf.fit(X, ans, t_, **cfargs)
     
     coefs = clf.coefs
     thrs = clf.thrs
-            
+    
+    X_ = X.transpose(1,0,2).reshape((X.shape[1],-1))
+    _, S, V = la.svd(X_[:,:].T-X_[:,:].mean(1), full_matrices=False)
+    dimension[epoch] = (np.sum(S**2)**2)/np.sum(S**4)
+    
+    dclf = LinearDecoder(rnn, 3, clsfr)
+    # for d in Dichotomies(ans[:,:,:2], 'general'):
+    dclf.fit(X, np.array([d for d in  Dichotomies(ans[:,:,:2], 'general')]).transpose(1,2,0), **cfargs)
+    
     ##### generate test data ##############################################
-    X, I, t_proj, ans, acc = draw_hidden_for_decoding(rnn, [l], nseq, 
+    X, I, t_proj, ans, acc = draw_hidden_for_decoding(rnn, [25], nseq, 
                                                       chunking=None,
                                                       decode_from=decode_from, 
                                                       decode_token=decode_token,
                                                       be_picky=None, 
                                                       forget=False, 
                                                       dead_time=None)
-            
+    
     ### test peformance ###################################################
     perf[epoch] = np.mean(clf.test(X, ans, t_proj)[:q])
     marg[epoch] = np.mean(clf.margin(X, ans, t_proj)[:q])
     signal_loss[epoch] = np.mean(acc[0][:q])
     noise_loss[epoch] = np.mean(acc[0][q:])
+    
+    shat_dim[epoch,:] = dclf.test(X, np.array([d for d in  Dichotomies(ans[:,:,:2], 'general')]).transpose(1,2,0)).flatten()
     
     print('done with epoch %d'%epoch)
     

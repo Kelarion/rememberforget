@@ -17,6 +17,7 @@ from torch.nn.parameter import Parameter
 import numpy as np
 import scipy.linalg as la
 import scipy.special as spc
+from itertools import combinations
 # from needful_functions import is_memory_active
 
 #%%
@@ -98,7 +99,7 @@ class RNNModel(nn.Module):
             else:
                 return decoded, hidden
 
-    def transparent_foward(self, input, hidden, give_gates=False, debug=False):
+    def transparent_forward(self, input, hidden, give_gates=False, debug=False):
         """
         Run the RNNs forward function, but returning hidden activity throughout the sequence
 
@@ -125,20 +126,21 @@ class RNNModel(nn.Module):
             else:
                 out, hidden = self.rnn(emb[t:t+1,...], hidden)
             dec = self.decoder(out)
-            naan = torch.ones(hidden.squeeze(0).shape)*np.nan
-            H[t,:,:] = torch.where(~ispad[t:t+1,:].T, hidden.squeeze(0), naan).T
+            # naan = torch.ones(hidden.squeeze(0).shape)*np.nan
+            # H[t,:,:] = torch.where(~ispad[t:t+1,:].T, hidden.squeeze(0), naan).T
+            H[t,:,:] = hidden.squeeze(0).T
             O[t,:,:] = dec.squeeze(0)
 
         if give_gates:
             if debug:
-                return dec, H, Z, R, emb
+                return O, H, Z, R, emb
             else:
-                return dec, H, Z, R
+                return O, H, Z, R
         else:
             if debug:
-                return dec, H, emb
+                return O, H, emb
             else:
-                return dec, H
+                return O, H
 
     def test_inputs(self, seqs, padding=-1):
         """ 
@@ -230,11 +232,12 @@ class RNNModel(nn.Module):
 
                 # update loss
                 running_loss += loss.item() 
-                self.metrics['train_loss'] = np.append(self.metrics['train_loss'], loss.item())
+                # self.metrics['train_loss'] = np.append(self.metrics['train_loss'], loss.item())
             
             # compute the metrics at each epoch of learning
             idx = np.random.choice(X.size(0),np.min([1500, X.size(0)]), replace=False)
             self.compute_metrics((X[idx,:].T, Y[idx]), test_data, criterion)
+            self.metrics['train_loss'] = np.append(self.metrics['train_loss'], running_loss/(i+1))
 
             if save_params:
                 thisdir = '/home/matteo/Documents/github/rememberforget/results/justremember/'
@@ -296,37 +299,39 @@ class RNNModel(nn.Module):
         P = self.decoder.out_features
 
         ## training data ###########################################################
-        hidden = self.init_hidden(trn.size(1))
-        out, hidden = self.transparent_foward(trn, hidden)
-        # output = out[t_final, np.arange(trn.size(1)), :]
-        output = out.squeeze()
-        # compute orthogonality
-        mem_act = np.array([np.cumsum(trn==p,axis=0).int().detach().numpy() % 2 \
-            for p in range(self.q_)]).transpose((1,2,0))
+        # hidden = self.init_hidden(trn.size(1))
+        # out, hidden = self.transparent_forward(trn, hidden)
+        # # output = out[t_final, np.arange(trn.size(1)), :]
+        # output = out.squeeze()
+        # # compute orthogonality
+        # mem_act = np.array([np.cumsum(trn==p,axis=0).int().detach().numpy() % 2 \
+        #     for p in range(self.q_)]).transpose((1,2,0))
 
-        ps_clf = LinearDecoder(self, 2**(self.q_-1), MeanClassifier)
-        ps = []
-        for d in Dichotomies(mem_act, 'simple'):
-            np.warnings.filterwarnings('ignore',message='invalid value encountered in')
-            ps_clf.fit(hidden.detach().numpy(), d)
-            new_ps = ps_clf.orthogonality()
-            ps.append(new_ps)
-            # if new_ps > ps:
-            #     ps = new_ps
-        m['train_parallelism'] = np.append(m['train_parallelism'], np.array(ps).T, axis=0)
+        # ps_clf = LinearDecoder(self, 2**(self.q_-1), MeanClassifier)
+        # ps = []
+        # for d in Dichotomies(mem_act, 'simple'):
+        #     np.warnings.filterwarnings('ignore',message='invalid value encountered in')
+        #     ps_clf.fit(hidden.detach().numpy(), d)
+        #     new_ps = ps_clf.orthogonality()
+        #     ps.append(new_ps)
+        #     # if new_ps > ps:
+        #     #     ps = new_ps
+        # m['train_parallelism'] = np.append(m['train_parallelism'], np.array(ps).T, axis=0)
 
-        # print(mem_act.shape)
-        # print(hidden.shape)
-        # self.orth_clf.fit(hidden.detach().numpy(), mem_act)
-        # orth_score = self.orth_clf.orthogonality()
-        # m['train_orthogonality'] = np.append(m['train_orthogonality'], orth_score)
+        # # print(mem_act.shape)
+        # # print(hidden.shape)
+        # # self.orth_clf.fit(hidden.detach().numpy(), mem_act)
+        # # orth_score = self.orth_clf.orthogonality()
+        # # m['train_orthogonality'] = np.append(m['train_orthogonality'], orth_score)
 
         ## test data ##############################################################
         hidden = self.init_hidden(tst.size(1))
-        out, hidden = self.transparent_foward(tst, hidden)
-        output = out.squeeze()
-        # print(hidden[-1,:,:])
-        # output = out[test_tfinal, np.arange(tst.size(1)), :]
+        out, hidden = self.transparent_forward(tst, hidden)
+        # output = out.squeeze()
+        # print(hidden.shape)
+        # print(out.shape)
+        # print(test_tfinal)
+        output = out[test_tfinal, np.arange(tst.size(1)), :]
         # raise Exception
 
         # compute loss
@@ -335,24 +340,24 @@ class RNNModel(nn.Module):
         m['test_loss'] = np.append(m['test_loss'], test_loss.item())
 
         # compute orthogonality
-        mem_act = np.array([np.cumsum(tst==p,axis=0).int().detach().numpy() % 2 \
-            for p in range(self.q_)]).transpose((1,2,0))
+        # mem_act = np.array([np.cumsum(tst==p,axis=0).int().detach().numpy() % 2 \
+        #     for p in range(self.q_)]).transpose((1,2,0))
 
-        # self.orth_clf.fit(hidden.detach().numpy(), mem_act)
-        # orth_score = self.orth_clf.orthogonality()
-        # m['test_orthogonality'] = np.append(m['test_orthogonality'], orth_score)
+        # # self.orth_clf.fit(hidden.detach().numpy(), mem_act)
+        # # orth_score = self.orth_clf.orthogonality()
+        # # m['test_orthogonality'] = np.append(m['test_orthogonality'], orth_score)
 
-        # compute parallelism
-        ps_clf = LinearDecoder(self, 2**(self.q_-1), MeanClassifier)
-        ps = []
-        for d in Dichotomies(mem_act, 'simple'):
-            np.warnings.filterwarnings('ignore',message='invalid value encountered in')
-            ps_clf.fit(hidden.detach().numpy(), d)
-            new_ps = ps_clf.orthogonality()
-            ps.append(new_ps)
-            # if new_ps > ps:
-            #     ps = new_ps
-        m['test_parallelism'] = np.append(m['test_parallelism'], np.array(ps).T, axis=0)
+        # # compute parallelism
+        # ps_clf = LinearDecoder(self, 2**(self.q_-1), MeanClassifier)
+        # ps = []
+        # for d in Dichotomies(mem_act, 'simple'):
+        #     np.warnings.filterwarnings('ignore',message='invalid value encountered in')
+        #     ps_clf.fit(hidden.detach().numpy(), d)
+        #     new_ps = ps_clf.orthogonality()
+        #     ps.append(new_ps)
+        #     # if new_ps > ps:
+        #     #     ps = new_ps
+        # m['test_parallelism'] = np.append(m['test_parallelism'], np.array(ps).T, axis=0)
 
         ## package #################################################################
         self.metrics = m
@@ -712,10 +717,22 @@ class Dichotomies:
             # 'cond' is the lexicographic enumeration of each binary condition
             # i.e. converting each ntot-bit binary vector into decimal number
             self.cond = np.einsum('...i,i',self.labels,2**np.arange(self.ntot))
+
+        elif dictype == 'general':
+            p = labels.shape[-1]
+            self.ntot = int(spc.binom(2**p, 2**(p-1))/2)
+
+            if p > 5:
+                raise ValueError("I can't do %d dichotomies ..."%self.ntot)
+
+            self.cond = np.einsum('...i,i',self.labels,2**np.arange(p))
+            self.combs = combinations(range(2**p), 2**p-1)
+    
         else:
             raise ValueError('Value for "dictype" is not valid: ' + dictype)
 
         self.dictype = dictype
+        self.curr = 0
 
     def __iter__(self):
         self.curr = 0
@@ -730,11 +747,17 @@ class Dichotomies:
                 g_neg = np.arange(2**self.ntot)[bit_is_zero]
 
                 L = np.array([np.where((self.cond==n)|(self.cond==n+(2**p)),self.cond==n,np.nan)\
-                    for n in g_neg])
+                    for n in g_neg]).transpose(1,2,0)
+
+            if self.dictype == 'general':
+                pos = next(self.combs)
+
+                L = np.isin(self.cond, pos)
 
             self.curr +=1
 
-            return L.transpose(1,2,0)
+            return L
+
         else:
             raise StopIteration
 

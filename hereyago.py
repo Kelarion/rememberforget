@@ -12,14 +12,17 @@ helptext = ('\nSynchronise files between computers with this wrapper for rsync!\
 	'remember task, or "rf" for the two-context task. You can specify '
 	'subfolders as "exp", "imp", and "per" in a comma-separated list.'
 	'\n 	e.g. 	... -t rf,exp,per ...'
-	'\nThanks for listening. \n')
+	'\nThanks for listening!!! \n')
+# -------------------------------------------------------------------------------------
 
 import subprocess, time, os, sys, getopt
 
-LOCAL_DIR = '/home/matteo/Documents/github/rememberforget/'
+# LOCAL_DIR = '/home/matteo/Documents/github/rememberforget/'
+LOCAL_DIR = '/home/matteo/Documents/github/babbler/'
 REMOTE_SYNC_SERVER = 'ma3811@habaxfer.rcs.columbia.edu' #must have ssh keys set up
 # REMOTE_SERVER = 'ma3811@habanero.rcs.columbia.edu'
-REMOTE_CODE = '/rigel/home/ma3811/remember-forget/'
+# REMOTE_CODE = '/rigel/home/ma3811/remember-forget/'
+REMOTE_CODE = '/rigel/home/ma3811/neural-grammar/'
 REMOTE_RESULTS = '/rigel/theory/users/ma3811/'
 # REMOTE_DIR = '{}:{}'.format(REMOTE_SYNC_SERVER, REMOTE_PATH)
 
